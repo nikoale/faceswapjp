@@ -21,9 +21,12 @@
   --radius: 14px;
   --radius-sm: 10px;
   --shadow: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--line);
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
-    "Noto Sans JP", "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", Consolas, monospace;
+  /* Japanese fonts are listed explicitly before the generic fallback: on machines without them the
+     browser may otherwise pick a Chinese font, whose glyph shapes look wrong for Japanese. */
+  --jp: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans CJK JP", "Source Han Sans JP",
+    "BIZ UDPGothic", "Yu Gothic UI", "Yu Gothic", YuGothic, Meiryo, "IPAexGothic", "IPAPGothic", "IPAGothic";
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Inter", var(--jp), sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", Consolas, var(--jp), monospace;
   --rail-w: 248px;
   --inspector-w: 380px;
   color-scheme: dark;
