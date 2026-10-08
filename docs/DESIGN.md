@@ -76,62 +76,45 @@
 
 ```
 faceswapjp/
-├── pyproject.toml              # 依存関係。extras: [mac] [cuda] [ui] [enhance]
+├── pyproject.toml              # 依存関係。extras: [mac] [cpu] [cuda] [ui] [dev]
 ├── README.md
 ├── docs/
 │   ├── DESIGN.md               # 本書
 │   └── MODEL_LICENSES.md       # モデルライセンス一覧
 ├── src/faceswapjp/
-│   ├── __init__.py
-│   ├── config.py               # 設定（パス、閾値、デフォルト）
-│   ├── runtime.py              # onnxruntime の EP 選択（CoreML / CUDA / CPU）
+│   ├── config.py               # パスと既定値
+│   ├── runtime.py              # onnxruntime の EP 選択（CoreML / CUDA / CPU）と CPU フォールバック
 │   ├── models/
 │   │   ├── manifest.toml       # URL / sha256 / ライセンス / 商用可否（モデル本体は ~/.faceswapjp/models）
 │   │   ├── registry.py         # manifest 読み込み、取得、ハッシュ検証、ライセンス確認
-│   │   └── interfaces.py       # Detector / Recognizer / Swapper / Enhancer / Occluder / NSFW の Protocol
-│   ├── analysis/
-│   │   ├── face.py             # Face データクラス（bbox, kps, embedding, track_id）
-│   │   └── insightface_backend.py
-│   ├── swappers/
-│   │   ├── __init__.py         # 名前 → 実装の登録（entry points でも拡張可能）
-│   │   └── inswapper.py
-│   ├── enhancers/
-│   │   └── gfpgan.py
-│   ├── occluders/
-│   │   └── ...                 # 顔パーシング / セグメンテーション
-│   ├── compositing/
-│   │   ├── align.py            # アフィン推定、warp、逆変換
-│   │   ├── mask.py             # 顔マスク、フェザー、マスク合成
-│   │   ├── color.py            # 色合わせ
-│   │   └── blend.py            # 貼り戻し、マット生成
-│   ├── tracking/
-│   │   ├── tracker.py          # トラック紐付け
-│   │   └── filters.py          # One Euro Filter
+│   │   └── interfaces.py       # FaceAnalyzer / Swapper / Occluder / Enhancer の Protocol
+│   ├── analysis/               # Face データクラス、InsightFace（検出・ArcFace）
+│   ├── swappers/               # 名前 → 実装の登録。inswapper.py
+│   ├── occluders/              # XSeg（手・小道具）、BiSeNet（顔領域）
+│   ├── enhancers/              # GFPGAN
+│   ├── compositing/            # align（アライン）、mask、color、blend（貼り戻しとマット）
+│   ├── tracking/               # tracker（IoU＋特徴量でトラック化）、filters（One Euro Filter）
 │   ├── pipeline/
-│   │   ├── frame.py            # 1 フレーム分の処理（静止画、動画、プレビューで共通）
-│   │   ├── image.py
-│   │   └── video.py
-│   ├── io/
-│   │   ├── probe.py            # ffprobe ラッパ
-│   │   ├── reader.py           # デコードパイプ
-│   │   ├── writer.py           # エンコードパイプ、mux
-│   │   └── presets.py          # ProRes / H.264 / マット
+│   │   ├── frame.py            # 1 フレーム分の処理（静止画・動画・プレビュー共通）
+│   │   ├── image.py            # 静止画
+│   │   └── video.py            # トラッキング付き動画処理、書き出し、プレビュー
+│   ├── media/
+│   │   ├── probe.py            # ffprobe ラッパ、タイムコード計算（ドロップフレーム対応）
+│   │   ├── ffpipe.py           # デコード／エンコードのパイプ、音声・TC・色タグ・メタデータの mux
+│   │   └── presets.py          # ProRes 422 HQ / ProRes 4444 / H.264
 │   ├── safety/
 │   │   ├── consent.py          # 同意ログ（ハッシュチェーン付き）
-│   │   ├── nsfw.py
-│   │   ├── provenance.py       # メタデータ書き込み
-│   │   └── watermark.py
+│   │   ├── nsfw.py             # NSFW ゲート
+│   │   ├── provenance.py       # 「AI face-swapped」メタデータ
+│   │   └── watermark.py        # 透かし
 │   ├── imageio.py              # 静止画の読み書き（16bit、アルファ、日本語パス）
-│   ├── engine.py               # モデル名 → analyzer / swapper の組み立てとライセンス確認
-│   ├── project.py              # プロジェクトフォルダの作成と読み込み
-│   ├── identity.py             # ソース顔の登録（複数画像の埋め込みを平均して正規化）
-│   ├── batch.py
+│   ├── engine.py               # モデル名 → 各プラグインの組み立てとライセンス確認
+│   ├── jobs.py                 # 登録・スワップ・プレビュー・バッチ（CLI と UI が共通で呼ぶ）
+│   ├── project.py              # プロジェクトフォルダ
+│   ├── identity.py             # ソース顔の登録（複数画像の特徴量を平均して正規化）
 │   ├── cli.py                  # `faceswapjp ...`
-│   └── ui/
-│       └── app.py              # Gradio
-└── tests/
-    ├── fixtures/               # 合成テスト素材（ffmpeg の testsrc や AI 生成の顔）
-    └── test_*.py
+│   └── ui/app.py               # Gradio
+└── tests/                      # 単体テスト（モデル不要）と、実モデルを使う任意のテスト
 ```
 
 プロジェクトのデータ（作業フォルダ。リポジトリとは別の場所に置く）：
@@ -140,24 +123,27 @@ faceswapjp/
 <project>/
 ├── project.json
 ├── consent_log.json
+├── consent/                  # UI で登録した同意書のコピー
 ├── identities/<id>/{identity.json, embedding.npy, refs/*.jpg}
 ├── previews/
 └── renders/
 ```
 
-## 4. CLI（案）
+## 4. CLI
+
+使い方の詳細は README を参照。
 
 ```
 faceswapjp project init ./myproj
-faceswapjp identity add  --project ./myproj --name "Actor A" \
-    --images a1.jpg a2.jpg --consent-date 2026-10-01 --consent-doc ./consent/actorA.pdf \
-    --source-type consented_person
-faceswapjp swap image    --project ./myproj --identity actor-a --target shot.jpg --out out.png
-faceswapjp swap video    --project ./myproj --identity actor-a --target clip.mov \
-    --only-person ref_stunt.jpg --format prores422hq --matte --watermark
-faceswapjp preview       --project ./myproj --identity actor-a --target clip.mov --frame 1200
-faceswapjp batch         --project ./myproj --identity actor-a --input-dir ./clips --format h264
-faceswapjp models list   # 各モデルのライセンスと商用可否を表示
+faceswapjp identity add -p ./myproj --label "Actor A" -i a1.jpg -i a2.jpg \
+    --person-name "..." --consent-date 2026-10-01 --consent-doc ./consent/actorA.pdf --source-type consented_person
+faceswapjp swap image   -p ./myproj --identity actor-a --target shot.jpg --out out.png
+faceswapjp swap video   -p ./myproj --identity actor-a --target clip.mov --out out.mov \
+    --only-person ref_stunt.jpg --format prores422hq --matte luma --mask box,occlusion,region --watermark
+faceswapjp preview      -p ./myproj --identity actor-a --target clip.mov --frame 1200 --out prev.png
+faceswapjp batch        -p ./myproj --identity actor-a --input-dir ./clips --output-dir ./out --format h264
+faceswapjp ui           --projects ./projects
+faceswapjp models list  # 各モデルのライセンスと商用可否
 ```
 
 ## 5. マイルストーン（受け入れ基準）

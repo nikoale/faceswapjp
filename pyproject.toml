@@ -21,7 +21,8 @@ dependencies = [
 mac = ["onnxruntime>=1.18"]
 cpu = ["onnxruntime>=1.18"]
 cuda = ["onnxruntime-gpu>=1.18"]
-dev = ["pytest>=8"]
+ui = ["gradio>=5", "pillow>=10"]
+dev = ["pytest>=8", "gradio>=5", "pillow>=10"]
 
 [project.scripts]
 faceswapjp = "faceswapjp.cli:app"

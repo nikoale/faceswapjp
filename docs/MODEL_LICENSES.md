@@ -43,7 +43,20 @@
 | FFmpeg | LGPL-2.1+（`--enable-gpl` でビルドした場合は GPL） | libx264 は GPL。ツールからは外部プロセスとして呼ぶのでリンクの問題は生じない。社内で使う分には影響しない。ツール自体を配布する場合は、同梱の扱いに注意する |
 | ProRes エンコード | `prores_ks`（FFmpeg）/ `prores_videotoolbox`（Apple） | `prores_ks` は Apple 公認のエンコーダではない。納品先が Apple 認定エンコーダを要求する場合は、Mac で `prores_videotoolbox` を使う |
 
-## 4. 実装上の対応
+## 4. 実装で使っているモデル（`faceswapjp models list` と同じ内容）
+
+InsightFace 以外のモデルは、FaceFusion プロジェクトが GitHub Releases で配布している ONNX 変換版（facefusion/facefusion-assets）を取得し、SHA-256 を manifest に記録している。変換元のライセンスがそのまま適用される。
+
+| 名前 | 用途 | 入手元 | 商用 |
+|---|---|---|---|
+| buffalo_l | 検出・特徴量 | deepinsight/insightface v0.7 release | ✕ |
+| inswapper_128 | スワップ | facefusion-assets models-3.0.0 | ✕ |
+| xseg_1 | オクルージョン（手・小道具） | facefusion-assets models-3.1.0 | ✕ 扱い（重みのライセンス表記なし。DeepFaceLab 系） |
+| bisenet_resnet_34 | 顔領域マスク | facefusion-assets models-3.0.0 | ✕（CelebAMask-HQ） |
+| gfpgan_1_4 | 顔補正（任意） | facefusion-assets models-3.0.0 | ✕ 扱い（FFHQ 由来） |
+| open_nsfw | NSFW ゲート | facefusion-assets models-3.0.0 | ◎（Yahoo、BSD-2-Clause） |
+
+## 5. 実装上の対応
 
 - `src/faceswapjp/models/manifest.toml` に各モデルの `license`、`commercial_use`（true / false / unknown）、`source_url`、`sha256` を記録する
 - `faceswapjp models list` でライセンスの状況を一覧表示する

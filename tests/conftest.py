@@ -12,11 +12,15 @@ class FakeAnalyzer:
         self.center, self.scale = center, scale
         self.embedding = embedding if embedding is not None else np.eye(512, dtype=np.float32)[0]
 
-    def detect(self, image):
+    def embed(self, image, face):
+        return self.embedding
+
+    def detect(self, image, with_embedding=True):
         kps = (template_points("arcface_128", 128) - 64) * self.scale + np.array(self.center, dtype=np.float32)
         x0, y0 = kps.min(0) - 20
         x1, y1 = kps.max(0) + 20
-        return [Face(np.array([x0, y0, x1, y1], np.float32), kps.astype(np.float32), 0.9, self.embedding)]
+        emb = self.embedding if with_embedding else None
+        return [Face(np.array([x0, y0, x1, y1], np.float32), kps.astype(np.float32), 0.9, emb)]
 
 
 class SolidSwapper:

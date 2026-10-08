@@ -66,7 +66,7 @@ def test_swap_image_without_face_fails(tmp_path, solid_swapper):
     import cv2
 
     class NoFaces:
-        def detect(self, image):
+        def detect(self, image, with_embedding=True):
             return []
 
     target = tmp_path / "t.png"

@@ -45,6 +45,14 @@ def doctor() -> None:
     typer.echo(f"available providers: {', '.join(ort.get_available_providers())}")
     typer.echo(f"auto selection:      {', '.join(provider_names(select_providers('auto')))}")
     typer.echo(f"models dir:          {config.models_dir()}")
+    try:
+        from .media.presets import PRESETS, available_encoders
+
+        enc = available_encoders()
+        for p in PRESETS.values():
+            typer.echo(f"encoder {p.name:12} {', '.join(e for e in p.encoders if e in enc) or 'NONE'}")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"ffmpeg:              {exc}")
     models_list()
 
 
@@ -55,7 +63,7 @@ def models_list() -> None:
         problems = registry.verify(spec)
         status = "ok" if not problems else ("missing" if all(p.startswith("missing") for p in problems) else "CORRUPT")
         commercial = {True: "commercial OK", False: "NON-COMMERCIAL", None: "unknown"}[spec.commercial_use]
-        typer.echo(f"{spec.name:16} {spec.kind:14} {status:8} {commercial:15} {spec.license}")
+        typer.echo(f"{spec.name:18} {spec.kind:14} {status:8} {commercial:15} {spec.license}")
 
 
 @models_app.command("download")
@@ -87,6 +95,79 @@ def project_init(
     typer.echo(f"created project {project.settings.name!r} at {path}")
 
 
+# ---- shared swap options -------------------------------------------------------------------
+IdentityOpt = Annotated[str, typer.Option("--identity", help="Identity id (see `identity list`).")]
+SelectOpt = Annotated[str, typer.Option("--select", help="all | largest | reference (set automatically by --only-person)")]
+OnlyPersonOpt = Annotated[Optional[list[Path]], typer.Option("--only-person", help="Image(s) of the person to replace; others are left alone.")]
+RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count as the --only-person.")]
+MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears).")]
+EnhanceOpt = Annotated[Optional[str], typer.Option("--enhance", help="Face restoration: gfpgan")]
+EnhanceBlendOpt = Annotated[float, typer.Option(help="Blend of the enhanced face 0..1.")]
+MaskBlurOpt = Annotated[float, typer.Option(help="Mask feather, fraction of the face crop.")]
+ColorOpt = Annotated[float, typer.Option(help="Color match strength 0..1.")]
+SmoothingOpt = Annotated[float, typer.Option(help="Landmark smoothing 0 (off)..1 (strong).")]
+WatermarkOpt = Annotated[bool, typer.Option("--watermark/--no-watermark", help="Burn in a visible watermark.")]
+WatermarkTextOpt = Annotated[str, typer.Option(help="Watermark text.")]
+WatermarkPosOpt = Annotated[str, typer.Option(help="bottom-right | bottom-left | top-right | top-left")]
+WatermarkFontOpt = Annotated[Optional[Path], typer.Option(help="TTF/OTF font for non-ASCII watermark text.")]
+FormatOpt = Annotated[str, typer.Option("--format", help="h264 | prores422hq | prores4444")]
+EncoderOpt = Annotated[Optional[str], typer.Option(help="Force an encoder (e.g. prores_videotoolbox, h264_videotoolbox).")]
+MatteOpt = Annotated[Optional[str], typer.Option("--matte", help="Also write <name>_matte.mov: luma (ProRes 422 HQ) | alpha (ProRes 4444 fill+alpha).")]
+StartOpt = Annotated[int, typer.Option(help="First frame (0-based).")]
+EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
+
+
+def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
+         smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
+         fmt="h264", encoder=None, matte=None, start=0, end=None):
+    from .jobs import SwapJob
+    from .pipeline.frame import FrameOptions
+    from .pipeline.video import RenderSettings, TrackingOptions
+    from .safety.watermark import Watermark
+
+    for p in only_person or []:
+        if not p.is_file():
+            _fail(f"reference image not found: {p}")
+    wm = Watermark(watermark_text, watermark_position, font_path=watermark_font) if watermark else None
+    return SwapJob(
+        identity_id=identity,
+        frame=FrameOptions(faces="largest" if select == "largest" else "all", mask_blur=mask_blur,
+                           color_strength=color_strength, enhance_blend=enhance_blend),
+        tracking=TrackingOptions(select=select, reference_threshold=ref_threshold, smoothing=smoothing),
+        render=RenderSettings(format=fmt, encoder=encoder, matte=matte, start=start, end=end, watermark=wm),
+        reference_images=list(only_person or []),
+        masks=mask,
+        enhancer=enhance,
+        device=device,
+    )
+
+
+def _run(fn):
+    """Run a job function, turning expected failures into clean CLI errors."""
+    from .media.probe import FFmpegError
+    from .safety.nsfw import NSFWContentError
+
+    try:
+        return fn()
+    except NSFWContentError as exc:
+        _fail(f"STOPPED: {exc}")
+    except (registry.ModelError, FFmpegError, FileNotFoundError, FileExistsError, ValueError) as exc:
+        _fail(str(exc))
+
+
+def _progress_bar(total_label: str = "frames"):
+    import sys
+
+    def cb(done: int, total: int) -> None:
+        if done == total or done % 10 == 0:
+            sys.stderr.write(f"\r  {done}/{total} {total_label} ({100 * done // max(total, 1)}%)")
+            if done == total:
+                sys.stderr.write("\n")
+            sys.stderr.flush()
+
+    return cb
+
+
 @identity_app.command("add")
 def identity_add(
     project: ProjectOpt,
@@ -100,8 +181,8 @@ def identity_add(
     device: DeviceOpt = "auto",
 ) -> None:
     """Register a source face. Consent information is mandatory."""
-    from .engine import build_engine
-    from .identity import ConsentError, register_identity, validate_consent
+    from .identity import ConsentError, validate_consent
+    from .jobs import add_identity
     from .project import Project
 
     proj = Project.load(project)
@@ -112,11 +193,7 @@ def identity_add(
     for img in images:
         if not img.is_file():
             _fail(f"image not found: {img}")
-    try:
-        engine = build_engine(proj, device=device, swapper_name=None)
-        ident = register_identity(proj, engine.analyzer, label, images, consent, engine.analyzer_name, identity_id)
-    except (registry.ModelError, ValueError, FileExistsError) as exc:
-        _fail(str(exc))
+    ident = _run(lambda: add_identity(proj, label, images, consent, device, identity_id))
     sims = ", ".join(f"{s:.2f}" for s in ident.consistency)
     typer.echo(f"registered identity {ident.id!r} ({len(images)} image(s), consistency: {sims})")
 
@@ -134,21 +211,26 @@ def identity_list(project: ProjectOpt) -> None:
 @swap_app.command("image")
 def swap_image_cmd(
     project: ProjectOpt,
-    identity: Annotated[str, typer.Option("--identity", help="Identity id (see `identity list`).")],
+    identity: IdentityOpt,
     target: Annotated[Path, typer.Option(help="Target still image.")],
     out: Annotated[Path, typer.Option(help="Output image (.png or .jpg).")],
-    faces: Annotated[str, typer.Option(help="all | largest")] = "all",
-    mask_blur: Annotated[float, typer.Option(help="Mask feather, fraction of the face crop.")] = 0.12,
-    color_strength: Annotated[float, typer.Option(help="Color match strength 0..1.")] = 0.5,
     matte: Annotated[Optional[Path], typer.Option(help="Also write a 16-bit matte PNG.")] = None,
+    select: SelectOpt = "all",
+    only_person: OnlyPersonOpt = None,
+    ref_threshold: RefThresholdOpt = 0.4,
+    mask: MaskOpt = "box",
+    enhance: EnhanceOpt = None,
+    enhance_blend: EnhanceBlendOpt = 0.8,
+    mask_blur: MaskBlurOpt = 0.12,
+    color_strength: ColorOpt = 0.5,
+    watermark: WatermarkOpt = False,
+    watermark_text: WatermarkTextOpt = "AI face-swapped",
+    watermark_position: WatermarkPosOpt = "bottom-right",
+    watermark_font: WatermarkFontOpt = None,
     device: DeviceOpt = "auto",
 ) -> None:
     """Swap faces in a still image."""
-    from .engine import build_engine
-    from .identity import load_identity
-    from .models.registry import sha256_file
-    from .pipeline.frame import FrameOptions, FrameProcessor
-    from .pipeline.image import swap_image
+    from .jobs import swap_still
     from .project import Project
 
     proj = Project.load(project)
@@ -156,36 +238,161 @@ def swap_image_cmd(
         _fail("output must be .png or .jpg (metadata tagging is required)")
     if not target.is_file():
         _fail(f"target not found: {target}")
-    try:
-        ident, embedding = load_identity(proj, identity)
-        engine = build_engine(proj, device=device)
-    except (FileNotFoundError, registry.ModelError) as exc:
-        _fail(str(exc))
-    processor = FrameProcessor(engine.analyzer, engine.swapper, FrameOptions(faces=faces, mask_blur=mask_blur, color_strength=color_strength))
-    try:
-        result = swap_image(
-            processor,
-            embedding,
-            target,
-            out,
-            provenance={"models": [engine.analyzer_name, engine.swapper_name], "identity": ident.id},
-            matte_output=matte,
-        )
-    except ValueError as exc:
-        _fail(str(exc))
-    proj.consent_log.append(
-        "render",
-        kind="image",
-        identity_id=ident.id,
-        target=str(target.resolve()),
-        target_sha256=sha256_file(target),
-        output=str(out.resolve()),
-        output_sha256=sha256_file(out),
-        faces_replaced=len(result.faces),
-        models=[engine.analyzer_name, engine.swapper_name],
-        providers=engine.provider_names,
-    )
-    typer.echo(f"replaced {len(result.faces)} face(s) -> {out}  [{', '.join(engine.provider_names)}]")
+    job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device)
+    result = _run(lambda: swap_still(proj, job, target, out, matte))
+    typer.echo(f"replaced {len(result.faces)} face(s) -> {out}")
+
+
+@swap_app.command("video")
+def swap_video_cmd(
+    project: ProjectOpt,
+    identity: IdentityOpt,
+    target: Annotated[Path, typer.Option(help="Target video clip.")],
+    out: Annotated[Path, typer.Option(help="Output file (.mp4 for h264, .mov for ProRes).")],
+    fmt: FormatOpt = "h264",
+    encoder: EncoderOpt = None,
+    matte: MatteOpt = None,
+    start: StartOpt = 0,
+    end: EndOpt = None,
+    select: SelectOpt = "all",
+    only_person: OnlyPersonOpt = None,
+    ref_threshold: RefThresholdOpt = 0.4,
+    mask: MaskOpt = "box",
+    enhance: EnhanceOpt = None,
+    enhance_blend: EnhanceBlendOpt = 0.8,
+    mask_blur: MaskBlurOpt = 0.12,
+    color_strength: ColorOpt = 0.5,
+    smoothing: SmoothingOpt = 0.5,
+    watermark: WatermarkOpt = False,
+    watermark_text: WatermarkTextOpt = "AI face-swapped",
+    watermark_position: WatermarkPosOpt = "bottom-right",
+    watermark_font: WatermarkFontOpt = None,
+    device: DeviceOpt = "auto",
+) -> None:
+    """Swap faces in a video, keeping frame rate, size, audio and timecode."""
+    from .jobs import swap_video
+    from .project import Project
+
+    proj = Project.load(project)
+    if not target.is_file():
+        _fail(f"target not found: {target}")
+    job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
+               color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
+               fmt, encoder, matte, start, end)
+    res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
+    for w in res.warnings:
+        typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
+    fps = res.frames / res.seconds if res.seconds else 0
+    typer.echo(f"{res.frames} frames ({res.frames_with_faces} with swaps) -> {out}  [{fps:.1f} fps]")
+    if res.matte_output:
+        typer.echo(f"matte -> {res.matte_output}")
+
+
+@app.command()
+def preview(
+    project: ProjectOpt,
+    identity: IdentityOpt,
+    target: Annotated[Path, typer.Option(help="Video or still image.")],
+    out: Annotated[Path, typer.Option(help="Preview PNG.")],
+    frame: Annotated[int, typer.Option(help="Frame number (video).")] = 0,
+    compare: Annotated[bool, typer.Option(help="Write original | result side by side.")] = True,
+    select: SelectOpt = "all",
+    only_person: OnlyPersonOpt = None,
+    ref_threshold: RefThresholdOpt = 0.4,
+    mask: MaskOpt = "box",
+    enhance: EnhanceOpt = None,
+    enhance_blend: EnhanceBlendOpt = 0.8,
+    mask_blur: MaskBlurOpt = 0.12,
+    color_strength: ColorOpt = 0.5,
+    watermark: WatermarkOpt = False,
+    watermark_text: WatermarkTextOpt = "AI face-swapped",
+    watermark_position: WatermarkPosOpt = "bottom-right",
+    watermark_font: WatermarkFontOpt = None,
+    device: DeviceOpt = "auto",
+) -> None:
+    """Check the result on one frame before rendering."""
+    import numpy as np
+
+    from .imageio import encode_image
+    from .jobs import preview as run_preview
+    from .project import Project
+    from .safety.provenance import provenance_record, tag_image_bytes
+
+    proj = Project.load(project)
+    job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device)
+    original, result = _run(lambda: run_preview(proj, job, target, frame))
+    img = np.hstack([original, result.frame]) if compare else result.frame
+    out = out.with_suffix(".png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(tag_image_bytes(encode_image(img, ".png"), ".png", provenance_record(preview=True)))
+    typer.echo(f"{len(result.faces)} face(s) replaced on frame {frame} -> {out}")
+
+
+@app.command()
+def batch(
+    project: ProjectOpt,
+    identity: IdentityOpt,
+    input_dir: Annotated[Path, typer.Option("--input-dir", help="Folder of clips / stills.")],
+    output_dir: Annotated[Path, typer.Option("--output-dir", help="Where results and batch_report.json go.")],
+    fmt: FormatOpt = "h264",
+    encoder: EncoderOpt = None,
+    matte: MatteOpt = None,
+    select: SelectOpt = "all",
+    only_person: OnlyPersonOpt = None,
+    ref_threshold: RefThresholdOpt = 0.4,
+    mask: MaskOpt = "box",
+    enhance: EnhanceOpt = None,
+    enhance_blend: EnhanceBlendOpt = 0.8,
+    mask_blur: MaskBlurOpt = 0.12,
+    color_strength: ColorOpt = 0.5,
+    smoothing: SmoothingOpt = 0.5,
+    watermark: WatermarkOpt = False,
+    watermark_text: WatermarkTextOpt = "AI face-swapped",
+    watermark_position: WatermarkPosOpt = "bottom-right",
+    watermark_font: WatermarkFontOpt = None,
+    device: DeviceOpt = "auto",
+) -> None:
+    """Process every clip in a folder with the same settings. Failed clips are skipped and reported."""
+    import sys
+
+    from .jobs import batch as run_batch
+    from .project import Project
+
+    proj = Project.load(project)
+    if not input_dir.is_dir():
+        _fail(f"not a folder: {input_dir}")
+    job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
+               color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
+               fmt, encoder, matte)
+
+    def progress(i, n, done, total):
+        if done == total or done % 10 == 0:
+            sys.stderr.write(f"\r  clip {i + 1}/{n}: {done}/{total} frames")
+            if done == total:
+                sys.stderr.write("\n")
+
+    report = _run(lambda: run_batch(proj, job, input_dir, output_dir, progress=progress))
+    ok = sum(r.ok for r in report)
+    for r in report:
+        mark = "ok  " if r.ok else "FAIL"
+        typer.echo(f"{mark} {Path(r.source).name}" + (f"  ({r.error})" if r.error else ""))
+    typer.echo(f"{ok}/{len(report)} succeeded; report: {output_dir / 'batch_report.json'}")
+    if ok < len(report):
+        raise typer.Exit(2)
+
+
+@app.command()
+def ui(
+    project_root: Annotated[Path, typer.Option("--projects", help="Folder that holds projects.")] = Path("projects"),
+    port: Annotated[int, typer.Option()] = 7860,
+    device: DeviceOpt = "auto",
+) -> None:
+    """Start the local Gradio UI (bound to 127.0.0.1 only)."""
+    from .ui.app import launch
+
+    launch(project_root, port=port, device=device)
 
 
 @log_app.command("verify")

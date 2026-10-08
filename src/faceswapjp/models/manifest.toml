@@ -27,3 +27,47 @@ license_url = "https://github.com/deepinsight/insightface/tree/master/examples/i
 
 [models.inswapper_128.files]
 "inswapper_128.onnx" = "a290273ed497312095dac48cdef20feec9d5208298223dd01288ab202b54bea7"
+
+[models.xseg_1]
+kind = "occluder"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.1.0/xseg_1.onnx"
+dest = "xseg_1.onnx"
+license = "XSeg occlusion model (DeepFaceLab lineage, via FaceFusion assets): weights license unstated"
+commercial_use = false
+license_url = "https://github.com/facefusion/facefusion-assets"
+
+[models.xseg_1.files]
+"xseg_1.onnx" = "c4d1498b8a03b5fe2a3a5d2ef2a0402ab03bd51edaf5b2d8d5fb764702a97dd3"
+
+[models.bisenet_resnet_34]
+kind = "occluder"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/bisenet_resnet_34.onnx"
+dest = "bisenet_resnet_34.onnx"
+license = "BiSeNet face parsing trained on CelebAMask-HQ: non-commercial research only"
+commercial_use = false
+license_url = "https://mmlab.ie.cuhk.edu.hk/projects/CelebA/CelebAMask_HQ.html"
+
+[models.bisenet_resnet_34.files]
+"bisenet_resnet_34.onnx" = "4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96"
+
+[models.gfpgan_1_4]
+kind = "enhancer"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/gfpgan_1.4.onnx"
+dest = "gfpgan_1.4.onnx"
+license = "GFPGAN: code Apache-2.0, weights trained on FFHQ (CC BY-NC-SA 4.0) - treat as non-commercial"
+commercial_use = false
+license_url = "https://github.com/TencentARC/GFPGAN/blob/master/LICENSE"
+
+[models.gfpgan_1_4.files]
+"gfpgan_1.4.onnx" = "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385"
+
+[models.open_nsfw]
+kind = "safety"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/open_nsfw.onnx"
+dest = "open_nsfw.onnx"
+license = "Yahoo open_nsfw: BSD-2-Clause"
+commercial_use = true
+license_url = "https://github.com/yahoo/open_nsfw"
+
+[models.open_nsfw.files]
+"open_nsfw.onnx" = "922b01d7b5b1b6aea5875c36564f5e13bdcf4e945b13175ae42bdf7fea5b44c7"

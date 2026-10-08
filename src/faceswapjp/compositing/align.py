@@ -10,6 +10,11 @@ ARCFACE_112 = np.array(
     [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366], [41.5493, 92.3655], [70.7299, 92.2041]],
     dtype=np.float32,
 )
+# FFHQ alignment used by GFPGAN / CodeFormer (normalized to a unit square).
+FFHQ_NORM = np.array(
+    [[0.37691676, 0.46864664], [0.62285697, 0.46912813], [0.50123859, 0.61331904], [0.39308822, 0.72541100], [0.61150205, 0.72490465]],
+    dtype=np.float32,
+)
 
 
 def template_points(template: str, size: int) -> np.ndarray:
@@ -23,6 +28,8 @@ def template_points(template: str, size: int) -> np.ndarray:
         dst = ARCFACE_112 * ratio
         dst[:, 0] += 8.0 * ratio
         return dst
+    if template == "ffhq_512":
+        return FFHQ_NORM * size
     if template == "arcface_112":
         return ARCFACE_112 * (size / 112.0)
     raise ValueError(f"unknown template {template!r}")
@@ -45,6 +52,11 @@ def umeyama(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     scale = (s * d).sum() / var_s
     t = mu_d - scale * r @ mu_s
     return np.hstack([scale * r, t[:, None]]).astype(np.float32)
+
+
+def crop_to_crop(src_template: str, src_size: int, dst_template: str, dst_size: int) -> np.ndarray:
+    """Transform between two aligned crops of the same face (2x3, src crop -> dst crop)."""
+    return umeyama(template_points(src_template, src_size), template_points(dst_template, dst_size))
 
 
 def estimate_alignment(kps: np.ndarray, size: int, template: str = "arcface_128") -> np.ndarray:
