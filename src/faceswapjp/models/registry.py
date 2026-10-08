@@ -61,6 +61,18 @@ def get_spec(name: str) -> ModelSpec:
     return manifest[name]
 
 
+_VERIFIED: dict[tuple[str, int, int], str] = {}
+
+
+def _cached_sha256(path: Path) -> str:
+    """Model files are large (up to ~550 MB); hash each one once per process unless it changes."""
+    st = path.stat()
+    key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
+    if key not in _VERIFIED:
+        _VERIFIED[key] = sha256_file(path)
+    return _VERIFIED[key]
+
+
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -76,9 +88,14 @@ def verify(spec: ModelSpec, root: Path | None = None) -> list[str]:
         expected = spec.files.get(name)
         if not path.is_file():
             problems.append(f"missing: {path}")
-        elif expected and sha256_file(path) != expected:
+        elif expected and _cached_sha256(path) != expected:
             problems.append(f"sha256 mismatch: {path}")
     return problems
+
+
+def present(spec: ModelSpec, root: Path | None = None) -> bool:
+    """Cheap check (files exist); use verify() for integrity."""
+    return all(p.is_file() for p in spec.file_paths(root).values())
 
 
 def check_license(spec: ModelSpec, commercial: bool, license_override: str | None = None) -> None:

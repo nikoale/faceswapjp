@@ -176,7 +176,7 @@ class UIState:
 
 
 def missing_models() -> list[str]:
-    return [name for name, spec in registry.load_manifest().items() if registry.verify(spec)]
+    return [name for name, spec in registry.load_manifest().items() if not registry.present(spec)]
 
 
 def summary_md(s: Session) -> str:
