@@ -165,7 +165,7 @@ def find_faces(project: Project | None, target: Path, frame_index: int = 0, devi
 
 
 def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progress=None,
-               cancel: threading.Event | None = None) -> RenderResult:
+               cancel: threading.Event | None = None, on_frame=None) -> RenderResult:
     engine = get_engine(project, job.device, job.masks, job.enhancer)
     identity, embedding = load_identity(project, job.identity_id)
     info = probe(target)
@@ -176,7 +176,7 @@ def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progr
     tracked = TrackedProcessor(engine.frame_processor(job.frame), embedding, float(info.fps), job.tracking, reference)
     result = render_video(tracked, target, output, job.render,
                           provenance={"models": _models(engine), "identity": identity.id},
-                          progress=progress, cancel=cancel, info=info)
+                          progress=progress, cancel=cancel, info=info, on_frame=on_frame)
     _log_render(project, "video", identity, engine, job, target, output, result.matte_output,
                 frames=result.frames, frames_with_faces=result.frames_with_faces, warnings=result.warnings,
                 nsfw_frames_checked=checked)

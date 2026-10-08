@@ -137,7 +137,9 @@ def render_video(
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
     info: VideoInfo | None = None,
+    on_frame: Callable[[int, np.ndarray], None] | None = None,
 ) -> RenderResult:
+    """on_frame(index, frame) receives each finished frame (e.g. for a live preview); keep it cheap."""
     info = info or probe(source)
     preset = get_preset(settings.format)
     if Path(output).suffix.lower() != preset.ext:
@@ -206,6 +208,8 @@ def render_video(
                 if settings.watermark is not None:
                     out = settings.watermark.apply(out)
                 main.write(out)
+                if on_frame is not None:
+                    on_frame(start + i, out)
                 done += 1
                 if progress:
                     progress(done, count)

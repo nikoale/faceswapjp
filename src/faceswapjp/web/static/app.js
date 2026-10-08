@@ -52,7 +52,7 @@ const S = {
   look: { keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.8 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
-  busy: "", job: null, result: null,
+  busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
 };
 
 // ---------------------------------------------------------------------------- api
@@ -138,11 +138,13 @@ function renderRail() {
   ];
   $("#rail").innerHTML = `
     <div class="rail-title">ワークフロー</div>
+    <div class="steps" style="--p:${S.step / (STEPS.length - 1)}">
     ${STEPS.map((st, i) => `
       <button class="step ${i === S.step ? "active" : ""} ${stepDone[i]() ? "done" : ""}" data-step="${i}">
         <span class="badge">${st.icon}</span>
         <span><div class="t">${i + 1}. ${st.t}</div><div class="s">${esc(subs[i])}</div></span>
       </button>`).join("")}
+    </div>
     <div class="grow"></div>
     <button class="rail-link" data-open="batch">${I.layers}<span>まとめて処理</span></button>
     <button class="rail-link" data-open="log">${I.list}<span>同意の記録</span></button>
@@ -152,6 +154,7 @@ function renderRail() {
 }
 
 function goStep(i) {
+  if (i !== S.step) S.enter = true;
   S.step = i;
   if (STEPS[i].id === "who" && S.target && S.facesFrame !== S.frame) findFaces();
   if (STEPS[i].id === "look" && S.target && !S.preview) runPreview();
@@ -181,6 +184,22 @@ function renderViewer() {
     return;
   }
   const t = S.target;
+  const j = S.job;
+  if (j && j.kind === "render" && j.live > 0) {
+    S.liveShown = j.live;
+    v.innerHTML = `
+      <div class="canvas" id="canvas" style="aspect-ratio:${t.width}/${t.height}">
+        <img class="layer base live-frame" id="live-img" src="${withToken(`/api/jobs/${j.id}/live?v=${j.live}`)}" alt="">
+        <div class="hud tl"><span class="rec"></span>RENDERING</div>
+        <div class="hud tr" id="hud-frames"></div>
+        <div class="hud bl" id="hud-tc"></div>
+        <div class="hud br" id="hud-rate"></div>
+        <div class="live-bar" id="live-bar"></div>
+      </div>`;
+    fitCanvas();
+    updateLive(j);
+    return;
+  }
   const hasPrev = !!S.preview;
   const view = hasPrev ? S.view : "frame";
   const base = view === "frame" ? frameUrl(S.frame) : view === "after" ? withToken(S.preview.after) : view === "matte" ? withToken(S.preview.matte) : withToken(S.preview.before);
@@ -189,18 +208,20 @@ function renderViewer() {
     ${hasPrev ? `<div class="view-tabs">
       ${[["frame", "元の映像"], ["compare", "比較"], ["after", "差し替え後"], ["matte", "差し替え範囲"]].map(([k, l]) =>
         `<button data-view="${k}" class="${view === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
-    <div class="canvas" id="canvas" style="aspect-ratio:${t.width}/${t.height}; --split:${S.split}%">
+    <div class="canvas ${S.enter ? "intro" : ""} ${S.facesFresh ? "fresh" : ""}" id="canvas" style="aspect-ratio:${t.width}/${t.height}; --split:${S.split}%">
       <img class="layer base" src="${base}" alt="">
       ${view === "compare" ? `<img class="layer after" src="${withToken(S.preview.after)}" alt="">
         <div class="split-handle" id="split"></div><span class="split-tag l">元</span><span class="split-tag r">差し替え後</span>` : ""}
       ${showFaces ? S.faces.map((f) => {
         const on = S.who === "all" || pickedIndex(f.emb) >= 0;
         const [x0, y0, x1, y1] = f.box;
-        return `<div class="facebox ${on ? "on" : ""} ${y0 < 0.07 ? "top" : ""}" data-face="${f.i}" style="left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%"><span class="n">${f.i + 1}</span></div>`;
+        return `<div class="facebox ${on ? "on" : ""} ${f.i === S.justToggled ? "just" : ""} ${y0 < 0.07 ? "top" : ""}" data-face="${f.i}" style="left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%;animation-delay:${f.i * 60}ms"><span class="n">${String(f.i + 1).padStart(2, "0")}</span></div>`;
       }).join("") : ""}
+      ${S.busyKind ? `<div class="fx ${S.busyKind}"></div><div class="fx-label"><div class="spinner"></div>${esc(S.busy)}</div>` : ""}
     </div>
-    ${S.busy ? `<div class="busy"><div class="chip"><div class="spinner"></div>${esc(S.busy)}</div></div>` : ""}`;
+    ${S.busy && !S.busyKind ? `<div class="busy"><div class="chip"><div class="spinner"></div>${esc(S.busy)}</div></div>` : ""}`;
   fitCanvas();
+  S.facesFresh = false; S.justToggled = -1;
   $$("[data-view]", v).forEach((b) => b.onclick = () => { S.view = b.dataset.view; renderViewer(); });
   $$(".facebox", v).forEach((b) => b.onclick = (e) => { e.stopPropagation(); toggleFace(+b.dataset.face); });
   const canvas = $("#canvas");
@@ -214,10 +235,26 @@ function renderViewer() {
     canvas.onpointerup = () => { canvas.onpointermove = null; };
   }
 }
+function updateLive(j) {
+  const t = S.target;
+  if (!$("#live-img")) { renderViewer(); return; }
+  if (j.live !== S.liveShown) {
+    S.liveShown = j.live;
+    const next = new Image();
+    next.onload = () => { const img = $("#live-img"); if (img) img.src = next.src; };
+    next.src = withToken(`/api/jobs/${j.id}/live?v=${j.live}`);
+  }
+  const pad = (n) => String(n).padStart(5, "0");
+  $("#hud-frames").textContent = `F ${pad(j.done)} / ${pad(j.total)}`;
+  $("#hud-tc").textContent = tcAt(j.live_frame || 0);
+  $("#hud-rate").textContent = j.done ? `${j.fps.toFixed(1)} FPS · ETA ${fmtSec(j.eta)}` : "PREPARING";
+  $("#live-bar").style.width = `${j.total ? (j.done / j.total) * 100 : 0}%`;
+}
 function fitCanvas() {
   const v = $("#viewer"), c = $("#canvas");
   if (!c || !S.target) return;
-  const pad = 44, top = S.preview ? 56 : 0;
+  const live = S.job && S.job.kind === "render" && S.job.live > 0;
+  const pad = 44, top = S.preview && !live ? 56 : 0;
   const W = v.clientWidth - pad, H = v.clientHeight - pad - top;
   const ar = S.target.width / S.target.height;
   const w = Math.min(W, H * ar);
@@ -249,8 +286,9 @@ function renderTimeline() {
       <button class="btn sm" id="tl-out" title="ここまで書き出す (O)">OUT <span class="kbd">O</span></button>
       ${inF != null || outF != null ? `<button class="btn sm ghost" id="tl-clear">範囲をクリア</button>` : ""}
     </div>
-    <div class="strip">
-      <div class="thumbs">${thumbs.map((f) => `<img src="${frameUrl(f, 200)}" alt="" loading="lazy">`).join("")}</div>
+    <div class="track">
+      <div class="strip"><div class="thumbs">${thumbs.map((f) => `<img src="${frameUrl(f, 200)}" alt="" loading="lazy">`).join("")}</div></div>
+      ${t.audio?.length ? `<div class="wave"><img src="${withToken(`/api/targets/${t.id}/waveform`)}" alt="" onerror="this.parentElement.remove()"></div>` : ""}
       ${inF != null || outF != null ? `<div class="range" style="left:${pct(inF ?? 0)}%;right:${100 - pct(outF ?? t.frames - 1)}%"></div>` : ""}
       <div class="playhead" id="tl-head" style="left:${pct(S.frame)}%"></div>
       <input type="range" id="tl-range" min="0" max="${t.frames - 1}" value="${S.frame}" aria-label="フレーム">
@@ -292,8 +330,24 @@ function setFrame(n, scrubbing = false) {
   afterFrameChange();
 }
 
+function openKeys() {
+  modal(`<div class="modal-head"><div><div class="eyebrow">SHORTCUTS</div><h2>キーボード操作</h2></div>
+    <button class="btn ghost icon-btn" data-close>${I.x}</button></div>
+    <div class="modal-body"><div class="keys">
+      <span><span class="kbd">←</span> <span class="kbd">→</span></span><span>1 フレーム移動</span>
+      <span><span class="kbd">Shift</span> + <span class="kbd">←</span> <span class="kbd">→</span></span><span>10 フレーム移動</span>
+      <span><span class="kbd">I</span> / <span class="kbd">O</span></span><span>書き出す範囲の開始 / 終了</span>
+      <span><span class="kbd">1</span> 〜 <span class="kbd">5</span></span><span>ステップを切り替え</span>
+      <span><span class="kbd">C</span></span><span>元の映像と比較を切り替え（プレビュー後）</span>
+      <span><span class="kbd">?</span></span><span>この一覧</span>
+    </div></div>`);
+}
 document.addEventListener("keydown", (e) => {
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || $("#modal").open) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "?") openKeys();
+  if (/^[1-5]$/.test(e.key)) goStep(+e.key - 1);
+  if ((e.key === "c" || e.key === "C") && S.preview) { S.view = S.view === "compare" ? "frame" : "compare"; renderViewer(); }
   if (e.key === "ArrowLeft") { setFrame(S.frame - (e.shiftKey ? 10 : 1)); e.preventDefault(); }
   if (e.key === "ArrowRight") { setFrame(S.frame + (e.shiftKey ? 10 : 1)); e.preventDefault(); }
   if (e.key === "i" || e.key === "I") setIn();
@@ -305,14 +359,17 @@ function renderInspector() {
   const st = STEPS[S.step];
   const body = { face: inspFace, media: inspMedia, who: inspWho, look: inspLook, export: inspExport }[st.id]();
   const nextLabel = ["次へ：素材", "次へ：置き換える人", "次へ：仕上がり", "次へ：書き出し", null][S.step];
+  $("#inspector").classList.toggle("enter", S.enter);
+  S.enter = false;
   $("#inspector").innerHTML = `
-    <div class="insp-head"><div class="eyebrow">Step ${S.step + 1} / 5</div><h1>${st.title}</h1><p>${st.desc}</p></div>
+    <div class="insp-head"><div class="eyebrow">STEP ${String(S.step + 1).padStart(2, "0")} — 05</div><h1>${st.title}</h1><p>${st.desc}</p></div>
     <div class="insp-body">${body.html}</div>
     <div class="insp-foot">
       ${S.step > 0 ? `<button class="btn ghost" id="back">${I.prev} 戻る</button>` : ""}
       <span style="flex:1"></span>
       ${nextLabel ? `<button class="btn primary" id="next">${nextLabel} ${I.next}</button>`
-        : `<button class="btn primary" id="render" ${S.job ? "disabled" : ""}>${I.export} ${S.job ? "書き出し中…" : "書き出す"}</button>`}
+        : S.job ? `<button class="btn danger" id="cancel-job">${I.x} 書き出しを中止</button>`
+        : `<button class="btn primary" id="render">${I.export} 書き出す</button>`}
     </div>`;
   const back = $("#back"); if (back) back.onclick = () => goStep(S.step - 1);
   const next = $("#next");
@@ -328,6 +385,7 @@ function renderInspector() {
   };
   body.bind?.();
   const render = $("#render"); if (render) render.onclick = startRender;
+  const cj = $("#cancel-job"); if (cj) cj.onclick = () => attempt(() => api(`/api/jobs/${S.job.id}/cancel`, { method: "POST" }));
 }
 
 function inspFace() {
@@ -389,7 +447,7 @@ function inspWho() {
   const facesHtml = S.faces.length ? `<div class="people">${S.faces.map((f) => {
     const on = S.who === "all" || pickedIndex(f.emb) >= 0;
     return `<button class="person ${on ? "on" : ""}" data-face="${f.i}"><img src="${f.crop}" alt=""><span>${on ? "✓ " : ""}${f.i + 1} 番</span></button>`;
-  }).join("")}</div>` : `<div class="hint">${S.target ? "この場面では顔が見つかりませんでした。タイムラインで別の場面に移動してください。" : "先に素材を読み込んでください。"}</div>`;
+  }).join("")}</div>` : `<div class="hint">${S.busyKind === "scan" ? "顔を探しています…" : S.target ? "この場面では顔が見つかりませんでした。タイムラインで別の場面に移動してください。" : "先に素材を読み込んでください。"}</div>`;
   return {
     html: `
       <div class="seg" id="who">
@@ -561,12 +619,12 @@ let facesSeq = 0;
 async function findFaces() {
   if (!S.target) return;
   const seq = ++facesSeq, frame = S.frame;
-  S.busy = "顔を探しています…"; renderViewer();
+  S.busy = "顔を探しています…"; S.busyKind = "scan"; renderViewer();
   const r = await attempt(() => api(`/api/targets/${S.target.id}/faces`, { body: { frame, project: S.project } }));
   if (seq !== facesSeq) return;
-  S.busy = "";
+  S.busy = ""; S.busyKind = "";
   if (r) {
-    S.faces = r.faces; S.facesFrame = r.frame;
+    S.faces = r.faces; S.facesFrame = r.frame; S.facesFresh = true;
     if (S.faces.length === 1 && !S.picked.length && S.who === "pick") { S.picked.push({ emb: S.faces[0].emb, crop: S.faces[0].crop }); S.preview = null; }
   }
   renderAll();
@@ -576,7 +634,7 @@ function toggleFace(i) {
   if (!f) return;
   if (S.who === "all") S.who = "pick";
   const k = pickedIndex(f.emb);
-  if (k >= 0) S.picked.splice(k, 1); else S.picked.push({ emb: f.emb, crop: f.crop });
+  if (k >= 0) S.picked.splice(k, 1); else { S.picked.push({ emb: f.emb, crop: f.crop }); S.justToggled = i; }
   S.preview = null;
   renderAll();
 }
@@ -585,10 +643,10 @@ let previewSeq = 0;
 async function runPreview() {
   if (!S.target || !S.identity || (S.who === "pick" && !S.picked.length)) return;
   const seq = ++previewSeq;
-  S.busy = "プレビューを作成しています…"; renderViewer();
+  S.busy = "プレビューを作成しています…"; S.busyKind = S.target ? "shimmer" : ""; renderViewer();
   const r = await attempt(() => api("/api/preview", { body: payload() }));
   if (seq !== previewSeq) return;
-  S.busy = "";
+  S.busy = ""; S.busyKind = "";
   if (r) {
     S.preview = r; S.view = "compare";
     if (!r.faces) toast("この場面には置き換える人が映っていません。タイムラインで別の場面を選んでください。", "info");
@@ -614,6 +672,7 @@ function pollJob(id, onEnd) {
     S.job = j;
     if (["done", "error", "cancelled"].includes(j.status)) { S.job = null; onEnd(j); renderAll(); return; }
     renderJob();
+    if (j.kind === "render" && j.live > 0) updateLive(j);
     setTimeout(tick, 600);
   };
   tick();
@@ -621,7 +680,8 @@ function pollJob(id, onEnd) {
 function renderJob() {
   const bar = $("#jobbar");
   const j = S.job;
-  if (!j) { bar.classList.add("hidden"); return; }
+  // the live render view shows progress on the canvas itself; the floating bar is only for other jobs
+  if (!j || (j.kind === "render" && j.live > 0)) { bar.classList.add("hidden"); return; }
   bar.classList.remove("hidden");
   const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
   const stats = j.total && j.done ? `${j.done} / ${j.total} フレーム · ${j.fps} fps · 残り ${fmtSec(j.eta)}` : j.message || "準備中…";
@@ -792,6 +852,7 @@ function resetForProject() {
 // ---------------------------------------------------------------------------- boot
 $("#project").onchange = async (e) => { resetForProject(); S.project = e.target.value; await loadIdentities(); renderAll(); };
 $("#new-project").onclick = openNewProject;
+$("#keys-btn").onclick = openKeys;
 (async () => {
   await attempt(() => loadProjects());
   if (!S.env) return;

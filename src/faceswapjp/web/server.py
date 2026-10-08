@@ -67,6 +67,7 @@ class Target:
     frames: int
     fps: float
     display_name: str = ""
+    waveform: bytes | None = None
 
     def describe(self) -> dict[str, Any]:
         d = {"id": self.id, "name": self.display_name or self.path.name, "path": str(self.path), "kind": self.kind,
@@ -91,6 +92,19 @@ class Job:
     message: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     cancel: threading.Event = field(default_factory=threading.Event)
+    live: bytes | None = None  # latest rendered frame (JPEG) for the live view
+    live_version: int = 0
+    live_frame: int = 0
+    _live_at: float = 0.0
+
+    def offer_frame(self, index: int, frame: np.ndarray, every: float = 0.5) -> None:
+        """Keep a downscaled copy of a recent frame, at most every `every` seconds."""
+        now = time.time()
+        if now - self._live_at < every:
+            return
+        self._live_at = now
+        self.live, self.live_frame = jpeg(frame, 1280, 80), index
+        self.live_version += 1
 
     def public(self) -> dict[str, Any]:
         elapsed = time.time() - self.started if self.started else 0.0
@@ -98,7 +112,8 @@ class Job:
         eta = (self.total - self.done) / rate if rate > 0 and self.total else None
         return {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status, "done": self.done,
                 "total": self.total, "fps": round(rate, 2), "eta": eta, "elapsed": elapsed,
-                "message": self.message, "result": self.result}
+                "message": self.message, "result": self.result, "live": self.live_version,
+                "live_frame": self.live_frame}
 
 
 class Context:
@@ -403,6 +418,24 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         return Response(jpeg(ctx.read_frame(t, n), max(64, min(w, 3840))), media_type="image/jpeg",
                         headers={"Cache-Control": "max-age=600"})
 
+    @app.get("/api/targets/{tid}/waveform")
+    def waveform(tid: str):
+        t = ctx.target(tid)
+        if t.kind != "video" or not t.info.has_audio:
+            raise ApiError("音声がありません", 404)
+        if t.waveform is None:
+            from ..media.probe import ffmpeg_bin
+
+            cmd = [ffmpeg_bin(), "-v", "error", "-i", str(t.path), "-filter_complex",
+                   "[0:a:0]aformat=channel_layouts=mono,"
+                   "showwavespic=s=2400x96:colors=0x9a8cff:scale=sqrt", "-frames:v", "1",
+                   "-f", "image2pipe", "-vcodec", "png", "-"]
+            proc = subprocess.run(cmd, capture_output=True)
+            if proc.returncode != 0 or not proc.stdout:
+                raise ApiError("波形を作れませんでした", 404)
+            t.waveform = proc.stdout
+        return Response(t.waveform, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
     @app.post("/api/targets/{tid}/faces")
     async def faces(tid: str, request: Request):
         body = await request.json()
@@ -466,7 +499,8 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                 def progress(d, total):
                     job.done, job.total, job.message = d, total, "処理中…"
 
-                res = swap_video(project, job_spec, t.path, out, progress=progress, cancel=job.cancel)
+                res = swap_video(project, job_spec, t.path, out, progress=progress, cancel=job.cancel,
+                                 on_frame=job.offer_frame)
                 return {"output": str(out), "matte": str(res.matte_output) if res.matte_output else None,
                         "frames": res.frames, "seconds": res.seconds, "warnings": res.warnings,
                         "playable": out.suffix == ".mp4", "url": f"/api/file?path={out}"}
@@ -506,6 +540,13 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         if jid not in ctx.jobs:
             raise ApiError("処理が見つかりません", 404)
         return ctx.jobs[jid].public()
+
+    @app.get("/api/jobs/{jid}/live")
+    def job_live(jid: str):
+        job = ctx.jobs.get(jid)
+        if job is None or job.live is None:
+            raise ApiError("まだ表示できるフレームがありません", 404)
+        return Response(job.live, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/jobs/{jid}/cancel")
     def cancel_job(jid: str):

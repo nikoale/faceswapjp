@@ -109,3 +109,37 @@ def test_file_access_is_limited_to_projects(client):
     outside = _png(client.root / "secret.png")
     assert client.get("/api/file", params={"path": str(outside)}).status_code == 403
     assert client.post("/api/projects", json={"name": "../x"}).status_code == 400
+
+
+def _clip(path, frames=12):
+    import subprocess
+
+    dur = frames / 24
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=24:duration={dur}",
+                    "-f", "lavfi", "-i", f"sine=frequency=330:sample_rate=48000:duration={dur}",
+                    "-c:v", "prores_ks", "-c:a", "pcm_s16le", "-timecode", "00:00:10:00", str(path)], check=True)
+    return path
+
+
+def test_video_render_live_frames_and_waveform(client):
+    project = "はじめての作品"
+    ref = _png(client.root / "ref.png")
+    iid = client.post(f"/api/projects/{project}/identities",
+                      files=[("images", ("ref.png", ref.read_bytes(), "image/png"))],
+                      data={"person": "Taro", "consent_date": "2026-01-01", "source_type": "self",
+                            "attested": "true"}).json()["id"]
+    t = client.post("/api/targets/path", json={"path": str(_clip(client.root / "c.mov"))}).json()
+    assert t["kind"] == "video" and t["frames"] == 12 and t["timecode"] == "00:00:10:00"
+    wave = client.get(f"/api/targets/{t['id']}/waveform")
+    assert wave.status_code == 200 and wave.headers["content-type"] == "image/png"
+    body = {"project": project, "identity": iid, "target": t["id"], "who": "all", "codec": "h264"}
+    job = client.post("/api/render", json=body).json()
+    for _ in range(200):
+        state = client.get(f"/api/jobs/{job['id']}").json()
+        if state["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert state["status"] == "done", state
+    assert state["live"] >= 1
+    live = client.get(f"/api/jobs/{job['id']}/live")
+    assert live.status_code == 200 and live.headers["content-type"] == "image/jpeg"
