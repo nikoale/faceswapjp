@@ -32,6 +32,7 @@ from ..pipeline.video import RenderSettings, TrackingOptions  # noqa: E402
 from ..project import PROJECT_FILE, Project  # noqa: E402
 from ..safety.nsfw import NSFWContentError  # noqa: E402
 from ..safety.watermark import Watermark  # noqa: E402
+from ..messages import friendly  # noqa: E402
 
 DEFAULT_PROJECT = "はじめての作品"
 
@@ -64,24 +65,6 @@ footer { display: none !important; }
 
 # ----------------------------------------------------------------------------------------------
 # helpers
-
-
-def friendly(exc: Exception) -> str:
-    """Turn internal errors into something a beginner can act on."""
-    if isinstance(exc, NSFWContentError):
-        return "この素材は処理できません。性的な内容が含まれている可能性があるため、処理を止めました。"
-    if isinstance(exc, ConsentError):
-        return f"同意の情報に不足があります：{exc}"
-    if isinstance(exc, registry.ModelError):
-        return "必要なファイル（AI モデル）がまだありません。画面上部の「必要なファイルをダウンロード」を押してください。"
-    if isinstance(exc, FFmpegError):
-        if "not found" in str(exc):
-            return "動画を扱うためのソフト「ffmpeg」が見つかりません。ターミナルで `brew install ffmpeg` を実行してください。"
-        return f"動画ファイルを読み書きできませんでした。ファイルが壊れていないか確認してください。（{exc}）"
-    msg = str(exc)
-    if "no target face" in msg or "no face found" in msg:
-        return "顔が見つかりませんでした。顔がはっきり写っている画像・場面を選んでください。"
-    return msg
 
 
 def to_display(img: np.ndarray, max_side: int = 1280) -> np.ndarray:

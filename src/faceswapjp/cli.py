@@ -407,11 +407,18 @@ def ui(
     project_root: Annotated[Path, typer.Option("--projects", help="Folder that holds projects.")] = Path("projects"),
     port: Annotated[int, typer.Option()] = 7860,
     device: DeviceOpt = "auto",
+    classic: Annotated[bool, typer.Option("--classic", help="Use the older Gradio UI.")] = False,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Do not open a browser window.")] = False,
 ) -> None:
-    """Start the local Gradio UI (bound to 127.0.0.1 only)."""
-    from .ui.app import launch
+    """Start the local studio UI in your browser (bound to 127.0.0.1 only)."""
+    if classic:
+        from .ui.app import launch as launch_classic
 
-    launch(project_root, port=port, device=device)
+        launch_classic(project_root, port=port, device=device)
+        return
+    from .web.server import launch
+
+    launch(project_root, port=port, device=device, open_browser=not no_browser)
 
 
 @log_app.command("verify")
