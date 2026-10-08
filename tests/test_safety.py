@@ -40,19 +40,23 @@ def consent_doc(tmp_path):
     return p
 
 
-def test_validate_consent_requires_everything(consent_doc):
-    ok = validate_consent("山田 太郎", "2026-01-15", consent_doc, "consented_person")
-    assert ok.person_name == "山田 太郎" and len(ok.consent_document_sha256) == 64
+def test_validate_consent_document_optional_attestation_required(consent_doc):
+    ok = validate_consent("山田 太郎", "2026-01-15", "consented_person", True, consent_doc)
+    assert ok.person_name == "山田 太郎" and len(ok.consent_document_sha256) == 64 and ok.attested
+    no_doc = validate_consent("山田 太郎", "2026-01-15", "self", True)
+    assert no_doc.consent_document is None and no_doc.attested
+    with pytest.raises(ConsentError, match="right to use"):
+        validate_consent("A", "2026-01-15", "self", False)
     with pytest.raises(ConsentError):
-        validate_consent(" ", "2026-01-15", consent_doc, "self")
+        validate_consent(" ", "2026-01-15", "self", True)
     with pytest.raises(ConsentError):
-        validate_consent("A", "15/01/2026", consent_doc, "self")
+        validate_consent("A", "15/01/2026", "self", True)
     with pytest.raises(ConsentError):
-        validate_consent("A", (date.today() + timedelta(days=1)).isoformat(), consent_doc, "self")
+        validate_consent("A", (date.today() + timedelta(days=1)).isoformat(), "self", True)
     with pytest.raises(ConsentError):
-        validate_consent("A", "2026-01-15", consent_doc.parent / "missing.pdf", "self")
+        validate_consent("A", "2026-01-15", "self", True, consent_doc.parent / "missing.pdf")
     with pytest.raises(ConsentError):
-        validate_consent("A", "2026-01-15", consent_doc, "celebrity")
+        validate_consent("A", "2026-01-15", "celebrity", True)
 
 
 def test_make_id():
@@ -67,7 +71,7 @@ def test_register_identity_writes_files_and_log(tmp_path, consent_doc, fake_anal
     project = Project.init(tmp_path / "proj")
     ref = tmp_path / "ref.png"
     cv2.imwrite(str(ref), np.zeros((200, 220, 3), np.uint8))
-    consent = validate_consent("Taro", "2026-01-15", consent_doc, "self")
+    consent = validate_consent("Taro", "2026-01-15", "self", True)
     ident = register_identity(project, fake_analyzer, "Taro", [ref, ref], consent, "buffalo_l")
     loaded, emb = load_identity(project, ident.id)
     assert loaded.consent.person_name == "Taro"

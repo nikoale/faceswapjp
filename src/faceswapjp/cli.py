@@ -46,14 +46,28 @@ def doctor() -> None:
     typer.echo(f"auto selection:      {', '.join(provider_names(select_providers('auto')))}")
     typer.echo(f"models dir:          {config.models_dir()}")
     try:
-        from .media.presets import PRESETS, available_encoders
+        from .media.presets import OUTPUT_FORMATS, PRESETS, available_encoders
 
         enc = available_encoders()
-        for p in PRESETS.values():
-            typer.echo(f"encoder {p.name:12} {', '.join(e for e in p.encoders if e in enc) or 'NONE'}")
+        for name in OUTPUT_FORMATS:
+            p = PRESETS[name]
+            names = [e.name + (" (hw)" if e.hardware else "") for e in p.encoders if e.name in enc]
+            typer.echo(f"format {name:14} {', '.join(names) or 'NOT AVAILABLE'}")
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"ffmpeg:              {exc}")
     models_list()
+
+
+@app.command()
+def formats() -> None:
+    """List output formats and the encoders available on this machine."""
+    from .media.presets import OUTPUT_FORMATS, PRESETS, available_encoders
+
+    enc = available_encoders()
+    for name in OUTPUT_FORMATS:
+        p = PRESETS[name]
+        names = [e.name + (" (hw)" if e.hardware else "") for e in p.encoders if e.name in enc]
+        typer.echo(f"{name:14} {p.label}\n{'':14} encoders: {', '.join(names) or 'NOT AVAILABLE'}")
 
 
 @models_app.command("list")
@@ -110,8 +124,9 @@ WatermarkOpt = Annotated[bool, typer.Option("--watermark/--no-watermark", help="
 WatermarkTextOpt = Annotated[str, typer.Option(help="Watermark text.")]
 WatermarkPosOpt = Annotated[str, typer.Option(help="bottom-right | bottom-left | top-right | top-left")]
 WatermarkFontOpt = Annotated[Optional[Path], typer.Option(help="TTF/OTF font for non-ASCII watermark text.")]
-FormatOpt = Annotated[str, typer.Option("--format", help="h264 | prores422hq | prores4444")]
-EncoderOpt = Annotated[Optional[str], typer.Option(help="Force an encoder (e.g. prores_videotoolbox, h264_videotoolbox).")]
+FormatOpt = Annotated[str, typer.Option("--format", help="h264, h265, prores_proxy, prores_lt, prores422, prores422hq, prores4444, prores4444xq, dnxhr_lb, dnxhr_sq, dnxhr_hq, dnxhr_hqx, dnxhr_444 (see `faceswapjp formats`)")]
+EncoderOpt = Annotated[Optional[str], typer.Option(help="auto | software | hardware, or an ffmpeg encoder name (e.g. h264_videotoolbox).")]
+QualityOpt = Annotated[str, typer.Option(help="high | standard | light (H.264 / H.265).")]
 MatteOpt = Annotated[Optional[str], typer.Option("--matte", help="Also write <name>_matte.mov: luma (ProRes 422 HQ) | alpha (ProRes 4444 fill+alpha).")]
 StartOpt = Annotated[int, typer.Option(help="First frame (0-based).")]
 EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
@@ -119,7 +134,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-         fmt="h264", encoder=None, matte=None, start=0, end=None):
+         fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard"):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -134,7 +149,8 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
         frame=FrameOptions(faces="largest" if select == "largest" else "all", mask_blur=mask_blur,
                            color_strength=color_strength, enhance_blend=enhance_blend),
         tracking=TrackingOptions(select=select, reference_threshold=ref_threshold, smoothing=smoothing),
-        render=RenderSettings(format=fmt, encoder=encoder, matte=matte, start=start, end=end, watermark=wm),
+        render=RenderSettings(format=fmt, encoder=encoder, quality=quality, matte=matte, start=start, end=end,
+                              watermark=wm),
         reference_images=list(only_person or []),
         masks=mask,
         enhancer=enhance,
@@ -175,8 +191,9 @@ def identity_add(
     images: Annotated[list[Path], typer.Option("--image", "-i", help="Reference image (repeatable).")],
     person_name: Annotated[str, typer.Option(help="Full name of the person (required).")],
     consent_date: Annotated[str, typer.Option(help="Date consent was given, YYYY-MM-DD (required).")],
-    consent_doc: Annotated[Path, typer.Option(help="Path to the signed consent document (required).")],
     source_type: Annotated[str, typer.Option(help="consented_person | self | synthetic")],
+    confirm_consent: Annotated[bool, typer.Option("--confirm-consent", help="Confirm you have the right to use this face (required).")] = False,
+    consent_doc: Annotated[Optional[Path], typer.Option(help="Signed consent document (optional).")] = None,
     identity_id: Annotated[Optional[str], typer.Option("--id")] = None,
     device: DeviceOpt = "auto",
 ) -> None:
@@ -187,7 +204,7 @@ def identity_add(
 
     proj = Project.load(project)
     try:
-        consent = validate_consent(person_name, consent_date, consent_doc, source_type)
+        consent = validate_consent(person_name, consent_date, source_type, confirm_consent, consent_doc)
     except ConsentError as exc:
         _fail(str(exc))
     for img in images:
@@ -252,6 +269,7 @@ def swap_video_cmd(
     out: Annotated[Path, typer.Option(help="Output file (.mp4 for h264, .mov for ProRes).")],
     fmt: FormatOpt = "h264",
     encoder: EncoderOpt = None,
+    quality: QualityOpt = "standard",
     matte: MatteOpt = None,
     start: StartOpt = 0,
     end: EndOpt = None,
@@ -279,7 +297,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end)
+               fmt, encoder, matte, start, end, quality)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
@@ -338,6 +356,7 @@ def batch(
     output_dir: Annotated[Path, typer.Option("--output-dir", help="Where results and batch_report.json go.")],
     fmt: FormatOpt = "h264",
     encoder: EncoderOpt = None,
+    quality: QualityOpt = "standard",
     matte: MatteOpt = None,
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
@@ -365,7 +384,7 @@ def batch(
         _fail(f"not a folder: {input_dir}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte)
+               fmt, encoder, matte, quality=quality)
 
     def progress(i, n, done, total):
         if done == total or done % 10 == 0:

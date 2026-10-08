@@ -29,15 +29,25 @@ def test_build_job_requires_choices():
 def test_build_job_maps_plain_language_options():
     emb = np.eye(512, dtype=np.float32)[:2]
     s = _session(picked=[app.Picked(emb[0], None), app.Picked(emb[1], None)])
-    job = app.build_job(s, True, True, 0.1, 0.3, 0.45, 0.6, app.USE_EDIT, app.MATTE_LUMA, True, 1.0, 2.0)
+    job = app.build_job(s, True, True, 0.1, 0.3, 0.45, 0.6, "dnxhr_hq", app.QUALITY_LABELS["high"],
+                        app.ENCODER_LABELS["hardware"], app.MATTE_LUMA, True, 1.0, 2.0)
     assert job.masks == "box,occlusion,region" and job.enhancer == "gfpgan"
-    assert job.render.format == "prores422hq" and job.render.matte == "luma" and job.render.watermark is not None
+    assert job.render.format == "dnxhr_hq" and job.render.matte == "luma" and job.render.watermark is not None
+    assert job.render.quality == "high" and job.render.encoder == "hardware"
     assert (job.render.start, job.render.end) == (24, 48)
     assert job.tracking.select == "reference" and job.reference_embeddings.shape == (2, 512)
 
     everyone = app.build_job(_session(who=app.WHO_ALL), False, False, 0.1, 0.3, 0.4, 0.5)
     assert everyone.tracking.select == "all" and everyone.reference_embeddings is None
     assert everyone.render.format == "h264" and everyone.masks == "box" and everyone.render.end is None
+    assert everyone.render.quality == "standard" and everyone.render.encoder == "auto"
+
+
+def test_quick_choices_map_to_codecs():
+    from faceswapjp.media.presets import OUTPUT_FORMATS
+
+    assert set(app.QUICK_CODEC.values()) <= set(OUTPUT_FORMATS)
+    assert "拡張子" in app.codec_note("prores422hq")
 
 
 def test_picker_toggle_by_identity():

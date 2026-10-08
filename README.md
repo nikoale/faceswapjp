@@ -41,7 +41,7 @@ faceswapjp ui
 
 | ステップ | やること |
 |---|---|
-| 1. 使う顔 | 差し替えに使う顔を選ぶか、写真と本人の同意（氏名・日付・同意書）を入れて登録します |
+| 1. 使う顔 | 差し替えに使う顔を選ぶか、写真・氏名・日付を入れ、「この顔を使う権利があることを確認しました」にチェックして登録します（同意書の添付は任意） |
 | 2. 素材 | 差し替えたい動画・写真をドラッグ＆ドロップします |
 | 3. 置き換える人 | 見つかった顔に番号が付くので、置き換える人の顔をクリックします |
 | 4. 仕上がり確認 | 元と差し替え後をスライダーで見比べます。必要なら「境目のなじませ」などを調整します |
@@ -56,11 +56,11 @@ faceswapjp ui
 ## CLI
 
 ```bash
-# プロジェクトとソース顔（氏名・同意日・同意書は必須）
+# プロジェクトとソース顔（氏名・同意日・--confirm-consent は必須、同意書は任意）
 faceswapjp project init ./myproj
 faceswapjp identity add -p ./myproj --label "Stunt A" -i a1.jpg -i a2.jpg \
   --person-name "山田 太郎" --consent-date 2026-10-01 \
-  --consent-doc ./consent/yamada.pdf --source-type consented_person
+  --source-type consented_person --confirm-consent --consent-doc ./consent/yamada.pdf
 
 # プレビュー（元 | 結果 を横に並べた PNG）
 faceswapjp preview -p ./myproj --identity stunt-a --target clip.mov --frame 120 --out prev.png \
@@ -90,12 +90,27 @@ faceswapjp log verify -p ./myproj
 | `--smoothing 0..1` | ランドマークの時間方向スムージング（既定 0.5、0 でオフ） |
 | `--enhance gfpgan` / `--enhance-blend` | 顔補正 |
 | `--color-strength`、`--mask-blur` | 色合わせの強さ、マスクのぼかし |
-| `--format h264\|prores422hq\|prores4444` | 出力形式（h264 は `.mp4`、ProRes は `.mov`） |
-| `--encoder` | エンコーダを強制（例：`prores_videotoolbox`、`h264_videotoolbox`） |
+| `--format` | 出力形式。下の表を参照（`faceswapjp formats` で一覧と使えるエンコーダを表示） |
+| `--quality high\|standard\|light` | 画質（H.264 / H.265） |
+| `--encoder auto\|software\|hardware` | エンコーダの種類。`h264_videotoolbox` のように名前で指定することもできます |
 | `--matte luma\|alpha` | `<出力名>_matte.mov` も書き出します。luma は白黒の ProRes 422 HQ、alpha は ProRes 4444 のフィル＋アルファ |
 | `--start` / `--end` | フレーム範囲。タイムコードと音声は範囲に合わせてずらします |
 | `--watermark` / `--watermark-text` / `--watermark-position` / `--watermark-font` | 目に見える透かし。日本語テキストを使う場合はフォントファイルを指定します |
 | `--device auto\|coreml\|cuda\|cpu` | 実行デバイス |
+
+## 出力形式
+
+| `--format` | 内容 | 拡張子 |
+|---|---|---|
+| `h264` | H.264。確認・共有用 | .mp4 |
+| `h265` | H.265 / HEVC。10bit 素材は 10bit のまま | .mp4 |
+| `prores_proxy` / `prores_lt` / `prores422` / `prores422hq` | ProRes 422 系 | .mov |
+| `prores4444` / `prores4444xq` | ProRes 4444 系 | .mov |
+| `dnxhr_lb` / `dnxhr_sq` / `dnxhr_hq` | DNxHR（8bit 4:2:2） | .mov |
+| `dnxhr_hqx` / `dnxhr_444` | DNxHR（10bit） | .mov |
+
+- **ハードウェアエンコーダ**：Apple の VideoToolbox（H.264 / H.265 / ProRes）と NVIDIA の NVENC（H.264 / H.265）を、使える環境なら `--encoder hardware` で選べます。
+- **UI**：「書き出し」ステップの「書き出し形式を細かく選ぶ」で、同じ設定ができます。
 
 ## 元素材との一致
 
@@ -119,7 +134,7 @@ faceswapjp log verify -p ./myproj
 
 ## 安全機能（無効化できません）
 
-- **ソース顔の登録**：氏名・同意日・同意書が必須です。
+- **ソース顔の登録**：氏名・同意日と、「この顔を使う権利がある」ことの確認が必須です。同意書ファイルの添付は任意です。
 - **同意ログ**：プロジェクトごとの `consent_log.json` に、登録と書き出しをすべて記録します。各エントリには前のエントリのハッシュが含まれ、改ざんを検知できます。
 - **出力メタデータ**：出力ファイルに「AI face-swapped」を書き込みます（MOV / MP4 は comment / description、PNG は iTXt、JPEG は COM）。使用したモデルとソース顔の ID も JSON で記録します。
 - **NSFW ゲート**：参照画像・ターゲット画像の全枚と、動画の 1 秒ごとのフレームおよびシーンチェンジ時のフレームを判定します。性的コンテンツと判定された時点で処理を止めます。

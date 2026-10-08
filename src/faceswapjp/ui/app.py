@@ -8,6 +8,7 @@ import os
 
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
+import functools  # noqa: E402
 import hashlib  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
@@ -23,6 +24,7 @@ import numpy as np  # noqa: E402
 from ..compositing.blend import from_float, to_float  # noqa: E402
 from ..identity import ConsentError, list_identities, validate_consent  # noqa: E402
 from ..jobs import SwapJob, add_identity, batch, find_faces, is_video, preview, swap_still, swap_video  # noqa: E402
+from ..media.presets import OUTPUT_FORMATS, PRESETS, available_encoders  # noqa: E402
 from ..media.probe import FFmpegError, probe  # noqa: E402
 from ..models import registry  # noqa: E402
 from ..pipeline.frame import FrameOptions  # noqa: E402
@@ -42,6 +44,9 @@ WHO_PICK = "映っている人の中から選ぶ（おすすめ）"
 WHO_ALL = "映っている全員を置き換える"
 USE_SHARE = "確認・共有用（MP4・ファイルが小さい）"
 USE_EDIT = "編集用の高画質（ProRes 422 HQ・DaVinci Resolve / Premiere 向け）"
+QUALITY_LABELS = {"high": "高画質（ファイル大）", "standard": "標準", "light": "軽量（ファイル小）"}
+ENCODER_LABELS = {"auto": "自動（おすすめ）", "software": "ソフトウェア（高画質・遅め）", "hardware": "ハードウェア（速い）"}
+QUICK_CODEC = {USE_SHARE: "h264", USE_EDIT: "prores422hq"}
 MATTE_NONE = "書き出さない"
 MATTE_LUMA = "白黒のマスク動画（おすすめ）"
 MATTE_ALPHA = "透明付きの差し替え素材（ProRes 4444）"
@@ -244,6 +249,21 @@ def picked_text(s: Session) -> str:
     return f"**{len(s.picked)} 人**を選択中です（緑の枠）。もう一度クリックすると外せます。"
 
 
+def codec_note(codec: str) -> str:
+    """Which encoders this machine has for the chosen codec, in plain words."""
+    try:
+        enc = available_encoders()
+    except FFmpegError:
+        return "⚠ ffmpeg が見つかりません。"
+    preset = PRESETS[codec]
+    sw = [e.name for e in preset.encoders if not e.hardware and e.name in enc]
+    hw = [e.name for e in preset.encoders if e.hardware and e.name in enc]
+    parts = [f"拡張子：{preset.ext}"]
+    parts.append(f"ソフトウェア：{', '.join(sw) if sw else 'なし'}")
+    parts.append(f"ハードウェア：{', '.join(hw) if hw else 'この環境では使えません'}")
+    return "　".join(parts)
+
+
 def reveal(path: str) -> None:
     """Show a file in Finder / the file manager (the UI only runs locally)."""
     p = Path(path)
@@ -256,7 +276,8 @@ def reveal(path: str) -> None:
 
 
 def build_job(s: Session, keep_front: bool, sharpen: bool, blend: float, color: float, strictness: float,
-              smoothing: float, use: str = USE_SHARE, matte: str = MATTE_NONE, watermark: bool = False,
+              smoothing: float, codec: str = "h264", quality: str = QUALITY_LABELS["standard"],
+              encoder: str = ENCODER_LABELS["auto"], matte: str = MATTE_NONE, watermark: bool = False,
               start_sec: float = 0.0, end_sec: float = 0.0, device: str = "auto") -> SwapJob:
     if not s.identity:
         raise ValueError("「① 使う顔」で顔を選んでください")
@@ -271,7 +292,9 @@ def build_job(s: Session, keep_front: bool, sharpen: bool, blend: float, color: 
         tracking=TrackingOptions(select="reference" if s.who == WHO_PICK else "all",
                                  reference_threshold=strictness, smoothing=smoothing),
         render=RenderSettings(
-            format="h264" if use == USE_SHARE else "prores422hq",
+            format=codec or "h264",
+            quality={v: k for k, v in QUALITY_LABELS.items()}.get(quality, "standard"),
+            encoder={v: k for k, v in ENCODER_LABELS.items()}.get(encoder, "auto"),
             matte={MATTE_NONE: None, MATTE_LUMA: "luma", MATTE_ALPHA: "alpha"}[matte],
             start=start, end=end,
             watermark=Watermark() if watermark else None,
@@ -291,6 +314,27 @@ def build_ui(state: UIState):
     import gradio as gr
 
     first_project = state.ensure_default()
+
+    def soft(fn, n_outputs: int):
+        """Show problems as a toast and leave the screen untouched.
+
+        Raising gr.Error would cover every output component with a red "Error" overlay,
+        which hides the very form the user needs to fix.
+        """
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                gr.Warning(getattr(exc, "message", None) or friendly(exc), duration=8)
+            return gr.skip() if n_outputs == 1 else tuple(gr.skip() for _ in range(n_outputs))
+
+        return wrapper
+
+    def on(trigger, fn, inputs, outputs):
+        """Wire an event with soft error handling."""
+        return trigger(soft(fn, len(outputs)), inputs, outputs)
 
     # ---- callbacks ---------------------------------------------------------------------------
 
@@ -349,22 +393,24 @@ def build_ui(state: UIState):
         s.identity, s.identity_label = iid, info[iid][0]
         return s, gr.update(value=info[iid][1], visible=True), summary_md(s)
 
-    def on_register(images, label, kind, person, consent_date, consent_doc, s: Session):
+    def on_register(images, label, kind, person, consent_date, attest, consent_doc, s: Session):
         try:
             project = state.project(s.project)
             imgs = [file_path(f) for f in (images or [])]
             if not imgs:
                 raise ValueError("顔の写真を 1 枚以上追加してください")
+            if not attest:
+                raise ConsentError("「この顔を使う権利があることを確認しました」にチェックを入れてください")
+            kept = None
             doc = file_path(consent_doc)
-            if doc is None:
-                raise ConsentError("同意書のファイルを追加してください（自分の顔の場合も、同意したことを書いたメモなどを添付）")
-            digest = hashlib.sha256(doc.read_bytes()).hexdigest()[:16]
-            kept = project.root / "consent" / f"{digest}{doc.suffix.lower()}"
-            kept.parent.mkdir(exist_ok=True)
-            if not kept.exists():
-                shutil.copy2(doc, kept)
+            if doc is not None:  # optional: keep a copy inside the project
+                digest = hashlib.sha256(doc.read_bytes()).hexdigest()[:16]
+                kept = project.root / "consent" / f"{digest}{doc.suffix.lower()}"
+                kept.parent.mkdir(exist_ok=True)
+                if not kept.exists():
+                    shutil.copy2(doc, kept)
             source_type = {v: k for k, v in SOURCE_TYPES.items()}[kind]
-            consent = validate_consent(person, consent_date, kept, source_type)
+            consent = validate_consent(person, consent_date, source_type, bool(attest), kept)
             ident = add_identity(project, (label or "").strip() or person.strip(), imgs, consent, state.device)
         except Exception as exc:  # noqa: BLE001
             raise gr.Error(friendly(exc)) from None
@@ -373,7 +419,7 @@ def build_ui(state: UIState):
         low = [f"{i + 1} 枚目" for i, c in enumerate(ident.consistency) if c < 0.45]
         note = f"\n\n⚠ {', '.join(low)} は他の写真と別人のように見えます。同じ人の写真か確認してください。" if low else ""
         return (s, radio, thumb, f"✅ 「{ident.label}」を登録しました。この顔を使います。{note}", summary_md(s),
-                gr.update(open=False), None, "", "", None)
+                gr.update(open=False), None, "", "", False, None)
 
     def on_target(upload, typed, s: Session):
         path = Path(typed.strip()).expanduser() if typed and typed.strip() else file_path(upload)
@@ -466,34 +512,44 @@ def build_ui(state: UIState):
         matte = (np.clip(result.matte, 0, 1) * 255).astype(np.uint8)
         return (to_display(original), to_display(result.frame)), msg, to_display(cv2.cvtColor(matte, cv2.COLOR_GRAY2BGR), 640)
 
-    def default_output(s: Session, use: str) -> Path:
+    def default_output(s: Session, codec: str) -> Path:
         target = Path(s.target)
-        ext = (".mp4" if use == USE_SHARE else ".mov") if is_video(target) else ".png"
+        ext = PRESETS[codec or "h264"].ext if is_video(target) else ".png"
         return state.project(s.project).renders_dir / f"{target.stem}_swap{ext}"
 
-    def on_use(use, s: Session):
-        if not s.target:
-            return ""
-        return f"保存先：`{default_output(s, use)}`"
+    def out_text(s: Session, codec: str) -> str:
+        return f"保存先：`{default_output(s, codec)}`" if s.target else ""
 
-    def on_render(s: Session, keep_front, sharpen, blend, color, strictness, smoothing, use, matte, watermark,
-                  start_sec, end_sec, progress=gr.Progress()):
+    def on_quick_use(use, s: Session):
+        """The beginner choice just picks a codec in the detailed settings."""
+        codec = QUICK_CODEC[use]
+        return (gr.update(value=codec), gr.update(visible=PRESETS[codec].has_quality), codec_note(codec),
+                out_text(s, codec))
+
+    def on_codec(codec, s: Session):
+        quick = next((k for k, v in QUICK_CODEC.items() if v == codec), None)
+        return (gr.update(value=quick), gr.update(visible=PRESETS[codec].has_quality), codec_note(codec),
+                out_text(s, codec))
+
+    def on_render(s: Session, keep_front, sharpen, blend, color, strictness, smoothing, codec, quality, encoder, matte,
+                  watermark, start_sec, end_sec, progress=gr.Progress()):
         state.cancel.clear()
         try:
             if not s.target:
                 raise ValueError("「② 素材」でファイルを選んでください")
-            job = build_job(s, keep_front, sharpen, blend, color, strictness, smoothing, use, matte, watermark,
-                            start_sec, end_sec, state.device)
+            job = build_job(s, keep_front, sharpen, blend, color, strictness, smoothing, codec, quality, encoder,
+                            matte, watermark, start_sec, end_sec, state.device)
             project = state.project(s.project)
-            out = default_output(s, use)
+            out = default_output(s, codec)
             if is_video(Path(s.target)):
                 progress(0, desc="安全チェック中…")
                 res = swap_video(project, job, Path(s.target), out, cancel=state.cancel,
                                  progress=lambda d, t: progress(d / t, desc=f"処理中… {d}/{t} フレーム"))
                 took = f"{res.seconds:.0f} 秒" if res.seconds < 90 else f"{res.seconds / 60:.1f} 分"
                 lines = ["### ✅ 書き出しが終わりました", f"`{out}`", f"{res.frames} フレーム・{took}かかりました"]
+                lines.append(f"形式：{PRESETS[job.render.format].label.split('—')[0].strip()}")
                 if out.suffix == ".mov":
-                    lines.append("高画質ファイルはブラウザでは再生できません。DaVinci Resolve などの編集ソフトで開いてください。")
+                    lines.append("このファイルはブラウザでは再生できません。DaVinci Resolve などの編集ソフトで開いてください。")
                 if res.matte_output:
                     lines.append(f"マスク動画：`{res.matte_output}`")
                 lines += [f"⚠ {w}" for w in res.warnings]
@@ -514,15 +570,15 @@ def build_ui(state: UIState):
         if s.last_output:
             reveal(s.last_output)
 
-    def on_batch(s: Session, in_dir, keep_front, sharpen, blend, color, strictness, smoothing, use, matte, watermark,
-                 progress=gr.Progress()):
+    def on_batch(s: Session, in_dir, keep_front, sharpen, blend, color, strictness, smoothing, codec, quality, encoder,
+                 matte, watermark, progress=gr.Progress()):
         state.cancel.clear()
         try:
             folder = Path((in_dir or "").strip()).expanduser()
             if not folder.is_dir():
                 raise ValueError("フォルダが見つかりません。パスを確認してください。")
-            job = build_job(s, keep_front, sharpen, blend, color, strictness, smoothing, use, matte, watermark,
-                            device=state.device)
+            job = build_job(s, keep_front, sharpen, blend, color, strictness, smoothing, codec, quality, encoder,
+                            matte, watermark, device=state.device)
             project = state.project(s.project)
             out = project.renders_dir / f"batch_{folder.name}"
             report = batch(project, job, folder, out, cancel=state.cancel,
@@ -591,13 +647,17 @@ def build_ui(state: UIState):
                                                 "角度や表情が違う写真を数枚入れると安定します。", elem_classes="hint")
                                     reg_label = gr.Textbox(label="2. 呼び名（あとで見分けるため）", placeholder="例：スタント A")
                                 with gr.Column():
-                                    gr.Markdown("**3. 本人の同意（必須）**\n\nこの顔を使ってよいという同意を記録します。"
+                                    gr.Markdown("**3. 使用の確認（必須）**\n\n誰の顔か・氏名・日付を記録します。"
                                                 "記録はこの作品のフォルダにだけ保存されます。", elem_classes="hint")
                                     reg_kind = gr.Radio(list(SOURCE_TYPES.values()), value=SOURCE_TYPES["self"],
                                                         label="誰の顔ですか？")
                                     reg_person = gr.Textbox(label="本人の氏名", placeholder="例：山田 太郎（AI の顔なら作成者名）")
                                     reg_date = gr.Textbox(label="同意した日（年-月-日）", value=date.today().isoformat())
-                                    reg_doc = gr.File(label="同意書のファイル（PDF・写真など）", file_count="single")
+                                    reg_attest = gr.Checkbox(
+                                        value=False,
+                                        label="この顔を使う権利があることを確認しました（本人の同意を得ている／自分自身／AI で作った顔）")
+                                    with gr.Accordion("同意書を添付する（任意）", open=False):
+                                        reg_doc = gr.File(label="同意書のファイル（PDF・写真など）", file_count="single")
                             reg_btn = gr.Button("この顔を登録する", variant="primary")
                         next1 = gr.Button("次へ：素材を選ぶ →", variant="primary", elem_classes="big-button")
 
@@ -676,6 +736,16 @@ def build_ui(state: UIState):
                         with gr.Row():
                             with gr.Column():
                                 use = gr.Radio([USE_SHARE, USE_EDIT], value=USE_SHARE, label="何に使いますか？")
+                                with gr.Accordion("書き出し形式を細かく選ぶ（コーデック・画質・エンコーダ）", open=False):
+                                    codec = gr.Dropdown([(PRESETS[n].label, n) for n in OUTPUT_FORMATS], value="h264",
+                                                        label="コーデック")
+                                    quality = gr.Radio(list(QUALITY_LABELS.values()), value=QUALITY_LABELS["standard"],
+                                                       label="画質（H.264 / H.265）")
+                                    encoder = gr.Radio(list(ENCODER_LABELS.values()), value=ENCODER_LABELS["auto"],
+                                                       label="エンコーダ")
+                                    codec_md = gr.Markdown(codec_note("h264"), elem_classes="hint")
+                                    gr.Markdown("解像度・フレームレート・タイムコード・音声は、どの形式でも元の素材と同じになります。",
+                                                elem_classes="hint")
                                 watermark = gr.Checkbox(value=False, label="画面の隅に「AI face-swapped」の文字を入れる")
                                 with gr.Accordion("編集ソフトで仕上げる人向け", open=False):
                                     matte = gr.Radio([MATTE_NONE, MATTE_LUMA, MATTE_ALPHA], value=MATTE_NONE,
@@ -718,61 +788,69 @@ def build_ui(state: UIState):
 
         # ---- wiring ------------------------------------------------------------------------------
         look = [keep_front, sharpen, blend, color, strictness, smoothing]
-        out_opts = [use, matte, watermark]
+        out_opts = [codec, quality, encoder, matte, watermark]
 
         id_widgets = [face_radio, face_thumb, face_msg, reg_acc]
-        demo.load(on_load, [s], [s, project_dd, *id_widgets, summary, banner])
-        dl_btn.click(on_download, None, [banner, dl_msg])
-        project_dd.input(on_project, [project_dd, s], [s, *id_widgets, summary])
-        new_project_btn.click(on_new_project, [new_project], [project_dd, new_project]).then(
-            on_project, [project_dd, s], [s, *id_widgets, summary])
+        on(demo.load, on_load, [s], [s, project_dd, *id_widgets, summary, banner])
+        on(dl_btn.click, on_download, None, [banner, dl_msg])
+        on(project_dd.input, on_project, [project_dd, s], [s, *id_widgets, summary])
+        on(new_project_btn.click, on_new_project, [new_project], [project_dd, new_project]).then(
+            soft(on_project, 6), [project_dd, s], [s, *id_widgets, summary])
 
-        face_radio.input(on_pick_identity, [face_radio, s], [s, face_thumb, summary])
-        reg_btn.click(on_register, [reg_images, reg_label, reg_kind, reg_person, reg_date, reg_doc, s],
-                      [s, face_radio, face_thumb, face_msg, summary, reg_acc, reg_images, reg_label, reg_person, reg_doc])
+        on(face_radio.input, on_pick_identity, [face_radio, s], [s, face_thumb, summary])
+        on(reg_btn.click, on_register, [reg_images, reg_label, reg_kind, reg_person, reg_date, reg_attest, reg_doc, s],
+           [s, face_radio, face_thumb, face_msg, summary, reg_acc, reg_images, reg_label, reg_person,
+            reg_attest, reg_doc])
 
         def go(step):
             return lambda: gr.Walkthrough(selected=step)
 
+        # Step guards have no outputs, so a gr.Error only shows a toast; .success() moves on when they pass.
         def need_identity(s_: Session):
             if not s_.identity:
-                raise gr.Error("顔を選ぶか、新しく登録してください")
-            return gr.Walkthrough(selected=1)
+                raise gr.Error("顔を選ぶか、新しく登録してください", duration=6)
 
-        next1.click(need_identity, [s], [wt])
+        def need_target(s_: Session):
+            if not s_.target:
+                raise gr.Error("ファイルを選んでください", duration=6)
+
+        next1.click(need_identity, [s], None).success(go(1), None, [wt])
         back2.click(go(0), None, [wt])
-        tgt_upload.change(on_target, [tgt_upload, tgt_path, s], [s, tgt_info, tgt_thumb, pick_slider, prev_slider, summary])
-        tgt_path.submit(on_target, [tgt_upload, tgt_path, s], [s, tgt_info, tgt_thumb, pick_slider, prev_slider, summary])
-        next2.click(on_enter_who, [s, pick_slider], [s, pick_image, pick_boxes, pick_msg, picked_md, summary]).success(
-            go(2), None, [wt])
+        target_outputs = [s, tgt_info, tgt_thumb, pick_slider, prev_slider, summary]
+        on(tgt_upload.change, on_target, [tgt_upload, tgt_path, s], target_outputs)
+        on(tgt_path.submit, on_target, [tgt_upload, tgt_path, s], target_outputs)
+        picker_outputs = [s, pick_image, pick_boxes, pick_msg, picked_md, summary]
+        next2.click(need_target, [s], None).success(go(2), None, [wt]).then(
+            soft(on_enter_who, len(picker_outputs)), [s, pick_slider], picker_outputs)
 
-        who.input(on_who, [who, s], [s, pick_image, picked_md, summary, pick_boxes])
-        pick_btn.click(search_faces, [s, pick_slider], [s, pick_image, pick_boxes, pick_msg, picked_md, summary])
-        pick_image.select(on_click_scene, [s], [s, pick_image, pick_boxes, picked_md, summary, who])
-        pick_boxes.input(on_check_faces, [pick_boxes, s], [s, pick_image, picked_md, summary])
-        clear_btn.click(on_clear, [s], [s, pick_image, pick_boxes, picked_md, summary])
+        on(who.input, on_who, [who, s], [s, pick_image, picked_md, summary, pick_boxes])
+        on(pick_btn.click, search_faces, [s, pick_slider], picker_outputs)
+        on(pick_image.select, on_click_scene, [s], [s, pick_image, pick_boxes, picked_md, summary, who])
+        on(pick_boxes.input, on_check_faces, [pick_boxes, s], [s, pick_image, picked_md, summary])
+        on(clear_btn.click, on_clear, [s], [s, pick_image, pick_boxes, picked_md, summary])
         back3.click(go(1), None, [wt])
 
         def need_people(s_: Session):
             if s_.who == WHO_PICK and not s_.picked:
-                raise gr.Error("置き換える人の顔をクリックして選んでください")
-            return gr.Walkthrough(selected=3)
+                raise gr.Error("置き換える人の顔をクリックして選んでください", duration=6)
 
-        next3.click(need_people, [s], [wt]).success(
-            on_preview, [s, prev_slider, *look], [prev_view, prev_msg, prev_matte])
-        prev_btn.click(on_preview, [s, prev_slider, *look], [prev_view, prev_msg, prev_matte])
+        preview_outputs = [prev_view, prev_msg, prev_matte]
+        next3.click(need_people, [s], None).success(go(3), None, [wt]).then(
+            soft(on_preview, len(preview_outputs)), [s, prev_slider, *look], preview_outputs)
+        on(prev_btn.click, on_preview, [s, prev_slider, *look], preview_outputs)
         back4.click(go(2), None, [wt])
-        next4.click(go(4), None, [wt]).then(on_use, [use, s], [out_md])
-        use.change(on_use, [use, s], [out_md])
+        next4.click(go(4), None, [wt]).then(out_text, [s, codec], [out_md])
+        on(use.input, on_quick_use, [use, s], [codec, quality, codec_md, out_md])
+        on(codec.input, on_codec, [codec, s], [use, quality, codec_md, out_md])
 
-        render_btn.click(on_render, [s, *look, *out_opts, start_sec, end_sec], [s, render_msg, result_video, reveal_btn])
+        on(render_btn.click, on_render, [s, *look, *out_opts, start_sec, end_sec], [s, render_msg, result_video, reveal_btn])
         cancel_btn.click(lambda: state.cancel.set(), None, None)
         reveal_btn.click(on_reveal, [s], None)
         back5.click(go(3), None, [wt])
 
-        b_btn.click(on_batch, [s, b_dir, *look, *out_opts], [b_msg, b_table])
+        on(b_btn.click, on_batch, [s, b_dir, *look, *out_opts], [b_msg, b_table])
         b_cancel.click(lambda: state.cancel.set(), None, None)
-        log_btn.click(on_log, [s], [log_status, log_table])
+        on(log_btn.click, on_log, [s], [log_status, log_table])
     return demo
 
 

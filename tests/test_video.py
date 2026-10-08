@@ -138,3 +138,38 @@ def test_tracked_processor_reference_selection(solid_swapper):
         assert len(res.faces) == 1 and res.faces[0].bbox[0] > 100
     assert res.matte[:, :95].max() == 0 and res.matte[:, 100:].max() > 0.9
     assert len(tracked.tracker.tracks) == 2
+
+
+@pytest.mark.parametrize("fmt", ["h265", "prores_proxy", "prores4444xq", "dnxhr_hq", "dnxhr_hqx"])
+@needs_ffmpeg
+def test_more_codecs(tmp_path, fmt):
+    from faceswapjp.media.presets import PRESETS, available_encoders
+
+    if not any(e.name in available_encoders() for e in PRESETS[fmt].encoders):
+        pytest.skip(f"no encoder for {fmt}")
+    src = _make_clip(tmp_path / "src.mov", frames=3, size="640x360")
+    info = probe(src)
+    out = tmp_path / ("o" + get_preset(fmt).ext)
+    with FrameWriter(out, info, get_preset(fmt), "bgr48le", quality="light", timecode=info.timecode,
+                     audio_source=src) as w:
+        for f in FrameReader(info):
+            w.write(f)
+    o = probe(out)
+    assert o.nb_frames == 3 and o.timecode == "01:00:00:00" and o.has_audio
+    assert o.codec == {"h265": "hevc", "dnxhr_hq": "dnxhd", "dnxhr_hqx": "dnxhd"}.get(fmt, "prores")
+    if fmt == "h265":
+        assert o.bit_depth == 10  # 10-bit source stays 10-bit
+
+
+def test_choose_encoder_modes(monkeypatch):
+    from faceswapjp.media import presets
+
+    monkeypatch.setattr(presets, "available_encoders", lambda: frozenset({"libx264", "h264_videotoolbox"}))
+    h264 = presets.get_preset("h264")
+    assert presets.choose_encoder(h264).name == "libx264"
+    assert presets.choose_encoder(h264, "hardware").name == "h264_videotoolbox"
+    assert presets.choose_encoder(h264, "software").name == "libx264"
+    with pytest.raises(presets.FFmpegError):
+        presets.choose_encoder(presets.get_preset("h265"), "hardware")
+    with pytest.raises(ValueError):
+        presets.choose_encoder(h264, "prores_ks")

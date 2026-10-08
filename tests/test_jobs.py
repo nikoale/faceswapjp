@@ -38,7 +38,7 @@ def project(tmp_path, engine):
     doc.write_bytes(b"signed")
     ref = tmp_path / "ref.png"
     cv2.imwrite(str(ref), np.full((200, 220, 3), 90, np.uint8))
-    jobs.add_identity(proj, "Taro", [ref], validate_consent("Taro", "2026-01-01", doc, "self"), identity_id="taro")
+    jobs.add_identity(proj, "Taro", [ref], validate_consent("Taro", "2026-01-01", "self", True, doc), identity_id="taro")
     return proj
 
 
@@ -73,7 +73,7 @@ def test_nsfw_checked_on_registration(tmp_path, project, engine):
     engine.safety.classifier.value = 0.95
     doc = tmp_path / "consent.pdf"
     with pytest.raises(NSFWContentError):
-        jobs.add_identity(project, "X", [_img(tmp_path / "r2.png")], validate_consent("X", "2026-01-01", doc, "self"))
+        jobs.add_identity(project, "X", [_img(tmp_path / "r2.png")], validate_consent("X", "2026-01-01", "self", True))
 
 
 def test_batch_skips_failures(tmp_path, project):

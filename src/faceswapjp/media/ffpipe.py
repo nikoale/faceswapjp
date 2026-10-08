@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .presets import Preset, choose_encoder
+from .presets import QUALITIES, Preset, choose_encoder
 from .probe import FFmpegError, VideoInfo, ffmpeg_bin
 
 log = logging.getLogger(__name__)
@@ -132,6 +132,7 @@ class FrameWriter:
         preset: Preset,
         input_pix_fmt: str,
         encoder: str | None = None,
+        quality: str = "standard",
         timecode: str | None = None,
         audio_source: Path | None = None,
         audio_start: float = 0.0,
@@ -144,6 +145,9 @@ class FrameWriter:
         self.preset = preset
         self.input_pix_fmt = input_pix_fmt
         self.encoder = choose_encoder(preset, encoder)
+        if quality not in QUALITIES:
+            raise ValueError(f"quality must be one of {', '.join(QUALITIES)}")
+        self.quality = quality
         self.timecode = timecode
         self.audio_source = audio_source
         self.audio_start = audio_start
@@ -174,7 +178,9 @@ class FrameWriter:
             cmd += ["-map", "1:a?"]
         out_range = _range(self.full_range_out)
         cmd += ["-vf", f"scale=out_color_matrix={info.matrix}:out_range={out_range}", "-sws_flags", SWS_FLAGS]
-        cmd += ["-c:v", self.encoder, *preset.args.get(self.encoder, ()), "-pix_fmt", preset.pix_fmt]
+        enc = self.encoder
+        pix_fmt = preset.pix_fmt_for(info.bit_depth if self.input_pix_fmt in ("bgr48le", "bgra64le") else 8)
+        cmd += ["-c:v", enc.name, *enc.args, *enc.quality.get(self.quality, ()), "-pix_fmt", pix_fmt]
         colorspace = {"bt709": "bt709", "bt601": "smpte170m", "bt2020": "bt2020nc"}[info.matrix]
         cmd += ["-colorspace", info.color_space or colorspace, "-color_range", out_range]
         if info.color_primaries and info.color_primaries != "unknown":

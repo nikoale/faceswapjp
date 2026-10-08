@@ -87,8 +87,9 @@ class TrackedProcessor:
 
 @dataclass
 class RenderSettings:
-    format: str = "h264"  # see media.presets.PRESETS
-    encoder: str | None = None
+    format: str = "h264"  # see media.presets.OUTPUT_FORMATS
+    encoder: str | None = None  # None/auto, software, hardware, or an ffmpeg encoder name
+    quality: str = "standard"  # high | standard | light (H.264 / H.265 only)
     matte: str | None = None  # None | "luma" (ProRes 422 HQ) | "alpha" (ProRes 4444 fill + alpha)
     start: int = 0
     end: int | None = None  # exclusive
@@ -141,8 +142,10 @@ def render_video(
     preset = get_preset(settings.format)
     if Path(output).suffix.lower() != preset.ext:
         raise ValueError(f"{settings.format} output must use {preset.ext}")
-    if preset.name == "h264" and (info.width % 2 or info.height % 2):
-        raise ValueError("H.264 (4:2:0) needs even width/height; use prores422hq for this clip")
+    if preset.group == "internal":
+        raise ValueError(f"{settings.format} is not an output format")
+    if preset.even_dims and (info.width % 2 or info.height % 2):
+        raise ValueError(f"{settings.format} (4:2:0) needs even width/height; use a ProRes or DNxHR format for this clip")
     warnings = video_warnings(info)
     for w in warnings:
         log.warning(w)
@@ -161,7 +164,7 @@ def render_video(
     pix = "bgr48le" if reader.depth == 16 else "bgr24"
     partial = start > 0 or end < info.nb_frames
     main = FrameWriter(
-        output, info, preset, pix, encoder=settings.encoder, timecode=tc, audio_source=source,
+        output, info, preset, pix, encoder=settings.encoder, quality=settings.quality, timecode=tc, audio_source=source,
         audio_start=float(start / fps) if partial else 0.0,
         audio_duration=float(count / fps) if partial else None,
         metadata=meta,
@@ -176,7 +179,7 @@ def render_video(
             matte_writer = FrameWriter(matte_out, info, get_preset("prores422hq"), "gray16le", timecode=tc,
                                        metadata=meta, full_range_out=False)
         else:
-            matte_writer = FrameWriter(matte_out, info, get_preset("prores4444"), "bgra64le", timecode=tc,
+            matte_writer = FrameWriter(matte_out, info, get_preset("prores4444_alpha"), "bgra64le", timecode=tc,
                                        metadata=meta)
 
     tracked.reset()

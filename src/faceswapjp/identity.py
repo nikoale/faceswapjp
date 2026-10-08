@@ -34,9 +34,10 @@ class ConsentError(ValueError):
 class ConsentInfo:
     person_name: str
     consent_date: str  # ISO 8601 date
-    consent_document: str  # absolute path at registration time
-    consent_document_sha256: str
     source_type: str
+    attested: bool = False  # the user confirmed they have the right to use this face
+    consent_document: str | None = None  # optional: absolute path at registration time
+    consent_document_sha256: str | None = None
 
 
 @dataclass
@@ -54,7 +55,14 @@ class Identity:
         return self.id
 
 
-def validate_consent(person_name: str, consent_date: str, consent_document: Path, source_type: str) -> ConsentInfo:
+def validate_consent(
+    person_name: str,
+    consent_date: str,
+    source_type: str,
+    attested: bool,
+    consent_document: Path | None = None,
+) -> ConsentInfo:
+    """Name, date, source type and an explicit confirmation are required; a document is optional."""
     if not person_name or not person_name.strip():
         raise ConsentError("person name is required")
     try:
@@ -63,17 +71,23 @@ def validate_consent(person_name: str, consent_date: str, consent_document: Path
         raise ConsentError(f"consent date must be YYYY-MM-DD, got {consent_date!r}") from exc
     if d > date.today():
         raise ConsentError(f"consent date is in the future: {consent_date}")
-    doc = Path(consent_document).expanduser()
-    if not doc.is_file():
-        raise ConsentError(f"consent document not found: {doc}")
     if source_type not in SOURCE_TYPES:
         raise ConsentError(f"source type must be one of {', '.join(SOURCE_TYPES)}")
+    if not attested:
+        raise ConsentError("confirm that you have the right to use this face (consent, yourself, or AI-generated)")
+    doc_path = doc_hash = None
+    if consent_document is not None:
+        doc = Path(consent_document).expanduser()
+        if not doc.is_file():
+            raise ConsentError(f"consent document not found: {doc}")
+        doc_path, doc_hash = str(doc.resolve()), sha256_file(doc)
     return ConsentInfo(
         person_name=person_name.strip(),
         consent_date=d.isoformat(),
-        consent_document=str(doc.resolve()),
-        consent_document_sha256=sha256_file(doc),
         source_type=source_type,
+        attested=True,
+        consent_document=doc_path,
+        consent_document_sha256=doc_hash,
     )
 
 
