@@ -45,7 +45,7 @@
 
 ## 4. 実装上の対応
 
-- `models/manifest.toml` に各モデルの `license`、`commercial_use`（true / false / unknown）、`source_url`、`sha256` を記録する
+- `src/faceswapjp/models/manifest.toml` に各モデルの `license`、`commercial_use`（true / false / unknown）、`source_url`、`sha256` を記録する
 - `faceswapjp models list` でライセンスの状況を一覧表示する
 - プロジェクトに `commercial = true` を設定した場合、`commercial_use != true` のモデルが選ばれていると処理を止める。商用ライセンスを取得したら `license_override = "<契約番号など>"` を記録して解除する
 

@@ -1,0 +1,29 @@
+# モデル定義。commercial_use は配布元のライセンスに基づく（docs/MODEL_LICENSES.md 参照）。
+# sha256 はファイル単位。archive がある場合は展開後のファイルを検証する。
+
+[models.buffalo_l]
+kind = "face_analysis"
+url = "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+archive = "zip"
+dest = "buffalo_l"
+license = "InsightFace pretrained models: non-commercial research only"
+commercial_use = false
+license_url = "https://github.com/deepinsight/insightface/tree/master/python-package"
+
+[models.buffalo_l.files]
+"det_10g.onnx" = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+"w600k_r50.onnx" = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+"2d106det.onnx" = "f001b856447c413801ef5c42091ed0cd516fcd21f2d6b79635b1e733a7109dbf"
+"1k3d68.onnx" = "df5c06b8a0c12e422b2ed8947b8869faa4105387f199c477af038aa01f9a45cc"
+"genderage.onnx" = "4fde69b1c810857b88c64a335084f1c3fe8f01246c9a191b48c7bb756d6652fb"
+
+[models.inswapper_128]
+kind = "swapper"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/inswapper_128.onnx"
+dest = "inswapper_128.onnx"
+license = "InsightFace inswapper: non-commercial (commercial license via contact@insightface.ai)"
+commercial_use = false
+license_url = "https://github.com/deepinsight/insightface/tree/master/examples/in_swapper"
+
+[models.inswapper_128.files]
+"inswapper_128.onnx" = "a290273ed497312095dac48cdef20feec9d5208298223dd01288ab202b54bea7"

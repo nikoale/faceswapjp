@@ -9,7 +9,7 @@
 
 | 方針 | 内容 |
 |---|---|
-| ローカル完結 | 推論・エンコードはすべてローカル。初回のモデル取得以外はネットワークに出ない。モデルは `models/` に手動配置も可能で、SHA-256 で検証する。Gradio は `127.0.0.1` バインド固定、`share=False` 固定、analytics 無効 |
+| ローカル完結 | 推論・エンコードはすべてローカル。初回のモデル取得以外はネットワークに出ない。モデルは `~/.faceswapjp/models`（`FACESWAPJP_MODELS_DIR` で変更可）に置く。手動配置も可能で、SHA-256 で検証する。Gradio は `127.0.0.1` バインド固定、`share=False` 固定、analytics 無効 |
 | コアと UI の分離 | すべての処理は `faceswapjp.pipeline` の関数として実装。CLI（Typer）と Gradio はそれを呼ぶだけの薄い層 |
 | モデルはプラグイン | 検出・識別・スワップ・補正・オクルージョン・NSFW を、それぞれ Protocol（インターフェース）で抽象化。モデル manifest にライセンス情報も持たせる |
 | 画質を落とさない | 元フレームは 16bit（rgb48）で読み、顔領域だけ float32 で処理して貼り戻す。顔以外の画素は元素材と同じ値のまま |
@@ -81,13 +81,12 @@ faceswapjp/
 ├── docs/
 │   ├── DESIGN.md               # 本書
 │   └── MODEL_LICENSES.md       # モデルライセンス一覧
-├── models/                     # .gitignore 対象。モデル実体を置く
-│   └── manifest.toml           # （リポジトリ管理）URL / sha256 / ライセンス / 商用可否
 ├── src/faceswapjp/
 │   ├── __init__.py
 │   ├── config.py               # 設定（パス、閾値、デフォルト）
 │   ├── runtime.py              # onnxruntime の EP 選択（CoreML / CUDA / CPU）
 │   ├── models/
+│   │   ├── manifest.toml       # URL / sha256 / ライセンス / 商用可否（モデル本体は ~/.faceswapjp/models）
 │   │   ├── registry.py         # manifest 読み込み、取得、ハッシュ検証、ライセンス確認
 │   │   └── interfaces.py       # Detector / Recognizer / Swapper / Enhancer / Occluder / NSFW の Protocol
 │   ├── analysis/
@@ -122,6 +121,8 @@ faceswapjp/
 │   │   ├── nsfw.py
 │   │   ├── provenance.py       # メタデータ書き込み
 │   │   └── watermark.py
+│   ├── imageio.py              # 静止画の読み書き（16bit、アルファ、日本語パス）
+│   ├── engine.py               # モデル名 → analyzer / swapper の組み立てとライセンス確認
 │   ├── project.py              # プロジェクトフォルダの作成と読み込み
 │   ├── identity.py             # ソース顔の登録（複数画像の埋め込みを平均して正規化）
 │   ├── batch.py
