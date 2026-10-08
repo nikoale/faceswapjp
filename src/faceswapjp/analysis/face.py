@@ -17,3 +17,10 @@ class Face:
     def area(self) -> float:
         x1, y1, x2, y2 = self.bbox
         return float(max(0.0, x2 - x1) * max(0.0, y2 - y1))
+
+
+def best_similarity(embedding: np.ndarray | None, references: np.ndarray) -> float:
+    """Highest cosine similarity between an embedding and one or more reference embeddings."""
+    if embedding is None:
+        return -1.0
+    return float(np.max(np.atleast_2d(references) @ embedding))

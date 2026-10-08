@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .analysis.face import Face, best_similarity
 from .engine import Engine, build_engine
 from .identity import ConsentInfo, Identity, embed_references, load_identity, register_identity
 from .imageio import SUPPORTED_EXT as IMAGE_EXT
@@ -37,16 +38,18 @@ class SwapJob:
     tracking: TrackingOptions = field(default_factory=TrackingOptions)
     render: RenderSettings = field(default_factory=RenderSettings)
     reference_images: list[Path] = field(default_factory=list)  # "only replace this person"
+    reference_embeddings: np.ndarray | None = None  # (N, 512): people picked in the UI
     masks: str = "box"
     enhancer: str | None = None
     device: str = "auto"
 
     def __post_init__(self):
-        if self.reference_images and self.tracking.select != "reference":
+        if (self.reference_images or self.reference_embeddings is not None) and self.tracking.select != "reference":
             self.tracking.select = "reference"
 
     def settings_record(self) -> dict:
         r = asdict(self.render)
+        r["reference_people"] = 0 if self.reference_embeddings is None else len(np.atleast_2d(self.reference_embeddings))
         r.pop("watermark", None)
         return {
             "frame": asdict(self.frame), "tracking": asdict(self.tracking), "render": r,
@@ -81,11 +84,15 @@ def add_identity(project: Project, label: str, images: list[Path], consent: Cons
 
 
 def _reference(engine: Engine, job: SwapJob) -> np.ndarray | None:
-    if not job.reference_images:
-        return None
-    engine.safety.check_images(job.reference_images)
-    emb, _ = embed_references(engine.analyzer, job.reference_images)
-    return emb
+    """(N, 512) reference embeddings from picked faces and/or reference images."""
+    refs = []
+    if job.reference_embeddings is not None:
+        refs.append(np.atleast_2d(job.reference_embeddings))
+    if job.reference_images:
+        engine.safety.check_images(job.reference_images)
+        emb, _ = embed_references(engine.analyzer, job.reference_images)
+        refs.append(emb[None])
+    return np.vstack(refs) if refs else None
 
 
 def _models(engine: Engine) -> list[str]:
@@ -99,8 +106,7 @@ def is_video(path: Path) -> bool:
 def select_still_faces(processor, frame: np.ndarray, job: SwapJob, reference: np.ndarray | None):
     faces = [f for f in processor.detect(frame) if f.det_score >= job.frame.min_det_score]
     if reference is not None:
-        faces = [f for f in faces
-                 if f.embedding is not None and float(f.embedding @ reference) >= job.tracking.reference_threshold]
+        faces = [f for f in faces if best_similarity(f.embedding, reference) >= job.tracking.reference_threshold]
     elif job.tracking.select == "largest" or job.frame.faces == "largest":
         faces = sorted(faces, key=lambda f: f.area, reverse=True)[:1]
     return faces
@@ -139,6 +145,23 @@ def preview(project: Project, job: SwapJob, target: Path, frame_index: int = 0) 
     if job.render.watermark is not None:
         job.render.watermark.apply(result.frame)
     return original, result
+
+
+def find_faces(project: Project | None, target: Path, frame_index: int = 0, device: str = "auto") -> tuple[np.ndarray, list[Face]]:
+    """Read one frame (or a still) and detect faces with embeddings, for picking who to replace."""
+    engine = get_engine(project, device, with_swapper=False)
+    if is_video(target):
+        from .media.ffpipe import FrameReader
+
+        info = probe(target)
+        frame = FrameReader(info, start=min(max(0, frame_index), max(0, info.nb_frames - 1)), count=1).read_one()
+    else:
+        frame = read_image(target)
+    image = to_detection_image(frame)
+    engine.safety.check_frames([(frame_index, image)], str(target))
+    faces = [f for f in engine.analyzer.detect(image) if f.det_score >= 0.5]
+    faces.sort(key=lambda f: f.bbox[0])
+    return frame, faces
 
 
 def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progress=None,

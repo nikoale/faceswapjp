@@ -89,3 +89,18 @@ def test_batch_skips_failures(tmp_path, project):
 def test_reference_job_switches_mode():
     job = SwapJob("x", reference_images=["r.png"])
     assert job.tracking.select == "reference"
+
+
+def test_picked_embeddings_select_only_that_person(tmp_path, project, engine):
+    other = np.eye(512, dtype=np.float32)[5]
+    job = SwapJob("taro", reference_embeddings=other[None])
+    assert job.tracking.select == "reference"
+    with pytest.raises(ValueError, match="no target face"):
+        jobs.swap_still(project, job, _img(tmp_path / "t.png"), tmp_path / "o.png")
+    same = SwapJob("taro", reference_embeddings=engine.analyzer.embedding[None])
+    assert len(jobs.swap_still(project, same, _img(tmp_path / "t.png"), tmp_path / "o.png").faces) == 1
+
+
+def test_find_faces(tmp_path, project):
+    frame, faces = jobs.find_faces(project, _img(tmp_path / "t.png"))
+    assert frame.shape == (200, 220, 3) and len(faces) == 1

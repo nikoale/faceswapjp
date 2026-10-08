@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..analysis.face import Face
+from ..analysis.face import Face, best_similarity
 from ..media.ffpipe import FrameReader, FrameWriter
 from ..media.presets import get_preset
 from ..media.probe import FFmpegError, VideoInfo, offset_timecode, probe
@@ -66,8 +66,7 @@ class TrackedProcessor:
             return True
         if mode == "largest":
             return track is max(pairs, key=lambda p: p[1].area)[0]
-        emb = track.embedding
-        track.is_target = emb is not None and float(emb @ self.reference) >= self.options.reference_threshold
+        track.is_target = best_similarity(track.embedding, self.reference) >= self.options.reference_threshold
         return track.is_target
 
     def process(self, frame: np.ndarray, index: int) -> FrameResult:
@@ -243,7 +242,7 @@ def preview_frame(
     elif select == "reference":
         if reference is None:
             raise ValueError("select='reference' needs a reference embedding")
-        faces = [f for f in faces if f.embedding is not None and float(f.embedding @ reference) >= reference_threshold]
+        faces = [f for f in faces if best_similarity(f.embedding, reference) >= reference_threshold]
     return frame, processor.process(frame, source_embedding, faces=faces)
 
 
