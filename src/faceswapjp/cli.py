@@ -134,7 +134,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-         fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard"):
+         fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard", detect_every=3):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -148,7 +148,8 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
         identity_id=identity,
         frame=FrameOptions(faces="largest" if select == "largest" else "all", mask_blur=mask_blur,
                            color_strength=color_strength, enhance_blend=enhance_blend),
-        tracking=TrackingOptions(select=select, reference_threshold=ref_threshold, smoothing=smoothing),
+        tracking=TrackingOptions(select=select, reference_threshold=ref_threshold, smoothing=smoothing,
+                                 detect_every=detect_every),
         render=RenderSettings(format=fmt, encoder=encoder, quality=quality, matte=matte, start=start, end=end,
                               watermark=wm),
         reference_images=list(only_person or []),
@@ -282,6 +283,7 @@ def swap_video_cmd(
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     smoothing: SmoothingOpt = 0.5,
+    detect_every: Annotated[int, typer.Option(help="Full face detection every N frames (1 = every frame, slower).")] = 3,
     watermark: WatermarkOpt = False,
     watermark_text: WatermarkTextOpt = "AI face-swapped",
     watermark_position: WatermarkPosOpt = "bottom-right",
@@ -297,7 +299,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end, quality)
+               fmt, encoder, matte, start, end, quality, detect_every)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
@@ -367,6 +369,7 @@ def batch(
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     smoothing: SmoothingOpt = 0.5,
+    detect_every: Annotated[int, typer.Option(help="Full face detection every N frames (1 = every frame, slower).")] = 3,
     watermark: WatermarkOpt = False,
     watermark_text: WatermarkTextOpt = "AI face-swapped",
     watermark_position: WatermarkPosOpt = "bottom-right",
@@ -384,7 +387,7 @@ def batch(
         _fail(f"not a folder: {input_dir}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, quality=quality)
+               fmt, encoder, matte, quality=quality, detect_every=detect_every)
 
     def progress(i, n, done, total):
         if done == total or done % 10 == 0:
@@ -419,6 +422,70 @@ def ui(
     from .web.server import launch
 
     launch(project_root, port=port, device=device, open_browser=not no_browser)
+
+
+@app.command()
+def bench(
+    target: Annotated[Path, typer.Option(help="A video to measure with (use your own footage).")],
+    frames: Annotated[int, typer.Option(help="How many frames to process.")] = 48,
+    start: Annotated[int, typer.Option(help="First frame.")] = 0,
+    mask: MaskOpt = "box",
+    enhance: EnhanceOpt = None,
+    detect_every: Annotated[int, typer.Option(help="Full face detection every N frames (1 = every frame).")] = 3,
+    fmt: FormatOpt = "h264",
+    encoder: EncoderOpt = None,
+    device: DeviceOpt = "auto",
+) -> None:
+    """Measure speed on this machine: fps and time per stage. The output is deleted afterwards.
+
+    The first face in the first frame is swapped with itself, so no identity or project is needed.
+    """
+    import tempfile
+    import time as _time
+
+    from .engine import build_engine
+    from .media.ffpipe import FrameReader
+    from .media.presets import get_preset
+    from .media.probe import probe
+    from .pipeline.frame import FrameOptions, to_detection_image
+    from .pipeline.video import RenderSettings, TrackedProcessor, TrackingOptions, render_video
+    from .runtime import session_provider
+
+    if not target.is_file():
+        _fail(f"target not found: {target}")
+    t0 = _time.time()
+    engine = _run(lambda: build_engine(None, device=device, masks=mask, enhancer=enhance))
+    load_s = _time.time() - t0
+    info = probe(target)
+    first = FrameReader(info, start=start, count=1).read_one()
+    faces = engine.analyzer.detect(to_detection_image(first))
+    if not faces:
+        _fail("no face in the first frame of the range; pick another --start")
+    source = max(faces, key=lambda f: f.area).embedding
+
+    typer.echo(f"model load: {load_s:.1f} s   providers: {', '.join(engine.provider_names)}")
+    sessions = {"swapper": getattr(engine.swapper, "_session", None)}
+    for occ in engine.occluders:
+        sessions[occ.name] = getattr(occ, "_session", None)
+    if engine.enhancer is not None:
+        sessions[engine.enhancer.name] = getattr(engine.enhancer, "_session", None)
+    for name, sess in sessions.items():
+        if sess is not None:
+            typer.echo(f"  {name:14} runs on {session_provider(sess)}")
+
+    processor = engine.frame_processor(FrameOptions())
+    tracked = TrackedProcessor(processor, source, float(info.fps),
+                               TrackingOptions(select="reference", detect_every=detect_every), reference_embedding=source[None])
+    end = min(info.nb_frames, start + frames)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / ("bench" + get_preset(fmt).ext)
+        res = _run(lambda: render_video(tracked, target, out, RenderSettings(format=fmt, encoder=encoder, start=start,
+                                                                              end=end), progress=_progress_bar()))
+    typer.echo(f"\n{res.frames} frames in {res.seconds:.1f} s  ->  {res.fps:.2f} fps "
+               f"({info.width}x{info.height}, {res.frames_with_faces} with faces)")
+    typer.echo(f"{'stage':16}{'ms/frame':>10}{'ms/call':>10}{'calls':>8}")
+    for stage, t in res.timings.items():
+        typer.echo(f"{stage:16}{t['ms_per_frame']:>10}{t['ms_per_call']:>10}{t['calls']:>8}")
 
 
 @log_app.command("verify")

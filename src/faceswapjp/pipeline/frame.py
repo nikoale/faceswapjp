@@ -13,6 +13,7 @@ from ..compositing.blend import from_float, paste_back, to_float
 from ..compositing.color import match_color
 from ..compositing.mask import box_mask
 from ..models.interfaces import Enhancer, FaceAnalyzer, Occluder, Swapper
+from ..profiling import NULL, Profiler
 
 
 @dataclass
@@ -38,6 +39,8 @@ def to_detection_image(frame: np.ndarray) -> np.ndarray:
     bgr = frame[..., :3]
     if bgr.dtype == np.uint8:
         return np.ascontiguousarray(bgr)
+    if bgr.dtype == np.uint16:
+        return cv2.convertScaleAbs(bgr, alpha=1 / 257)  # fast path (~2x numpy)
     return from_float(to_float(bgr), np.uint8)
 
 
@@ -71,6 +74,7 @@ class FrameProcessor:
         self.options = options or FrameOptions()
         self.occluders = list(occluders or [])
         self.enhancer = enhancer
+        self.profiler: Profiler = NULL
         self.work_size = self.options.work_size or (512 if enhancer else max(256, swapper.input_size))
         self._box = box_mask(self.work_size, self.options.mask_blur, self.options.mask_padding)
         if enhancer is not None:
@@ -97,14 +101,21 @@ class FrameProcessor:
 
     def swap_face(self, frame: np.ndarray, face: Face, source_embedding: np.ndarray, matte: np.ndarray) -> None:
         w = self.work_size
-        matrix = estimate_alignment(face.kps, w, self.swapper.template)
-        work = to_float(warp_crop(frame[..., :3], matrix, w))
-        swapped = _resize(self.swapper.swap(_resize(work, self.swapper.input_size), source_embedding), w)
+        prof = self.profiler
+        with prof("align"):
+            matrix = estimate_alignment(face.kps, w, self.swapper.template)
+            work = to_float(warp_crop(frame[..., :3], matrix, w))
+        with prof("swap"):
+            swapped = _resize(self.swapper.swap(_resize(work, self.swapper.input_size), source_embedding), w)
         if self.enhancer is not None:
-            swapped = self._enhance(swapped)
-        mask = self.face_mask(work)
-        swapped = match_color(swapped, work, mask, self.options.color_strength)
-        paste_back(frame, swapped, mask, matrix, matte)
+            with prof("enhance"):
+                swapped = self._enhance(swapped)
+        with prof("mask"):
+            mask = self.face_mask(work)
+        with prof("color"):
+            swapped = match_color(swapped, work, mask, self.options.color_strength)
+        with prof("paste"):
+            paste_back(frame, swapped, mask, matrix, matte)
 
     def process(
         self,

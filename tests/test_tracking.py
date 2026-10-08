@@ -76,13 +76,82 @@ def test_tracker_drops_stale_tracks():
 def test_needs_embedding_skips_settled_tracks():
     a = np.eye(512, dtype=np.float32)[0]
     tr = FaceTracker()
-    for i in range(1, 7):
-        tr.update([_face(0, a)], i, 1 / 24)
-    assert not tr.needs_embedding(_face(1), 7)
-    assert tr.needs_embedding(_face(1), 12)  # periodic refresh
-    assert tr.needs_embedding(_face(500), 7)  # new face
+    tr.update([_face(0, a)], 1, 1 / 24)
+    assert tr.needs_embedding(_face(1), 2)  # only one embedding so far
+    tr.update([_face(0, a)], 2, 1 / 24)
+    assert not tr.needs_embedding(_face(1), 3)
+    track_id = tr.tracks[0].id
+    refresh_frame = next(i for i in range(4, 40) if (i + track_id * 7) % 24 == 0)
+    assert tr.needs_embedding(_face(1), refresh_frame)  # periodic refresh
+    assert tr.needs_embedding(_face(500), 3)  # new face
 
 
 def test_iou():
     assert iou(np.array([0, 0, 10, 10]), np.array([0, 0, 10, 10])) == 1.0
     assert iou(np.array([0, 0, 10, 10]), np.array([20, 20, 30, 30])) == 0.0
+
+
+def test_interval_detection_uses_roi_and_recovers(solid_swapper):
+    from faceswapjp.pipeline.frame import FrameOptions, FrameProcessor
+    from faceswapjp.pipeline.video import TrackedProcessor, TrackingOptions
+
+    a = np.eye(512, dtype=np.float32)[0]
+
+    class CountingAnalyzer:
+        def __init__(self):
+            self.full = self.roi = 0
+            self.lose = set()
+
+        def detect(self, image, with_embedding=True):
+            self.full += 1
+            return [_face(0, a if with_embedding else None)]
+
+        def detect_roi(self, image, bbox, window=None):
+            self.roi += 1
+            return None if self.frame in self.lose else _face(0)
+
+        def embed(self, image, face):
+            return a
+
+    an = CountingAnalyzer()
+    tracked = TrackedProcessor(FrameProcessor(an, solid_swapper, FrameOptions(color_strength=0)), a, 24,
+                               TrackingOptions(detect_every=3))
+    frame = np.zeros((160, 200, 3), np.uint8)
+    for i in range(9):
+        an.frame = i
+        res = tracked.process(frame, i)
+        assert len(res.faces) == 1
+    # frames 0, 3, 6 full (landmarks refined in a crop); the other 6 frames crop-only
+    assert an.full == 3 and an.roi == 9
+
+    an.lose = {10}
+    an.full = an.roi = 0
+    for i in range(9, 12):
+        an.frame = i
+        tracked.process(frame, i)
+    assert an.full == 2  # frame 9 scheduled + frame 10 forced because the target was lost
+
+
+def test_detect_every_one_is_full_detection(solid_swapper):
+    from faceswapjp.pipeline.frame import FrameProcessor
+    from faceswapjp.pipeline.video import TrackedProcessor, TrackingOptions
+
+    a = np.eye(512, dtype=np.float32)[0]
+
+    class A:
+        full = 0
+
+        def detect(self, image, with_embedding=True):
+            A.full += 1
+            return [_face(0, a if with_embedding else None)]
+
+        def detect_roi(self, image, bbox, window=None):
+            raise AssertionError("ROI detection must not run with detect_every=1")
+
+        def embed(self, image, face):
+            return a
+
+    tracked = TrackedProcessor(FrameProcessor(A(), solid_swapper), a, 24, TrackingOptions(detect_every=1))
+    for i in range(4):
+        tracked.process(np.zeros((160, 200, 3), np.uint8), i)
+    assert A.full == 4

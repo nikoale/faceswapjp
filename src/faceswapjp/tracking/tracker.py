@@ -107,17 +107,17 @@ class FaceTracker:
         self.tracks = [t for t in self.tracks if t.misses <= self.max_misses]
         return pairs
 
-    def needs_embedding(self, face: Face, frame_index: int, settle: int = 5, refresh: int = 12) -> bool:
-        """Embeddings are only needed for new or unsettled tracks, plus a periodic refresh.
-
-        Skipping recognition for well-established tracks is the main per-frame saving.
+    def needs_embedding(self, face: Face, frame_index: int, settle: int = 2, refresh: int = 24) -> bool:
+        """Identity embeddings are expensive (~100 ms each on CPU), so they are computed only for
+        new or unsettled tracks, plus a periodic refresh that catches identity swaps when people
+        cross. Refreshes are staggered per track so they don't all land on the same frame.
         """
-        if frame_index % refresh == 0:
-            return True
         best = max(self.tracks, key=lambda t: iou(t.face.bbox, face.bbox), default=None)
         if best is None or iou(best.face.bbox, face.bbox) < 0.5:
             return True
-        return best.n_embeddings < settle
+        if best.n_embeddings < settle:
+            return True
+        return (frame_index + best.id * 7) % refresh == 0
 
     def coasting(self, max_coast: int) -> list[Track]:
         """Tracks missed in this frame but recently seen (to bridge 1-2 frame detection dropouts)."""
