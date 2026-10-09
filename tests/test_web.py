@@ -143,3 +143,31 @@ def test_video_render_live_frames_and_waveform(client):
     assert state["live"] >= 1
     live = client.get(f"/api/jobs/{job['id']}/live")
     assert live.status_code == 200 and live.headers["content-type"] == "image/jpeg"
+
+
+def test_bench_job_reports_timings(client):
+    t = client.post("/api/targets/path", json={"path": str(_clip(client.root / "b.mov", frames=24))}).json()
+    job = client.post("/api/bench", json={"target": t["id"], "frames": 12}).json()
+    for _ in range(200):
+        state = client.get(f"/api/jobs/{job['id']}").json()
+        if state["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert state["status"] == "done", state
+    r = state["result"]
+    assert r["frames"] == 12 and r["fps"] > 0 and "swap" in r["timings"]
+    assert "速度" in r["text"] and r["minutes_per_minute"] > 0
+
+
+def test_bench_rejects_stills(client):
+    t = client.post("/api/targets/path", json={"path": str(_png(client.root / "s.png"))}).json()
+    assert client.post("/api/bench", json={"target": t["id"]}).status_code == 400
+
+
+def test_shutdown_cancels_jobs_and_stops(client, monkeypatch):
+    import faceswapjp.web.server as server
+
+    calls = []
+    monkeypatch.setattr(server.threading, "Timer", lambda delay, fn: type("T", (), {"start": lambda self: calls.append(delay)})())
+    assert client.post("/api/shutdown").json() == {"ok": True}
+    assert calls == [0.6]

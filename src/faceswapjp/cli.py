@@ -440,52 +440,13 @@ def bench(
 
     The first face in the first frame is swapped with itself, so no identity or project is needed.
     """
-    import tempfile
-    import time as _time
-
-    from .engine import build_engine
-    from .media.ffpipe import FrameReader
-    from .media.presets import get_preset
-    from .media.probe import probe
-    from .pipeline.frame import FrameOptions, to_detection_image
-    from .pipeline.video import RenderSettings, TrackedProcessor, TrackingOptions, render_video
-    from .runtime import session_provider
+    from .bench import run_bench, summary_text
 
     if not target.is_file():
         _fail(f"target not found: {target}")
-    t0 = _time.time()
-    engine = _run(lambda: build_engine(None, device=device, masks=mask, enhancer=enhance))
-    load_s = _time.time() - t0
-    info = probe(target)
-    first = FrameReader(info, start=start, count=1).read_one()
-    faces = engine.analyzer.detect(to_detection_image(first))
-    if not faces:
-        _fail("no face in the first frame of the range; pick another --start")
-    source = max(faces, key=lambda f: f.area).embedding
-
-    typer.echo(f"model load: {load_s:.1f} s   providers: {', '.join(engine.provider_names)}")
-    sessions = {"swapper": getattr(engine.swapper, "_session", None)}
-    for occ in engine.occluders:
-        sessions[occ.name] = getattr(occ, "_session", None)
-    if engine.enhancer is not None:
-        sessions[engine.enhancer.name] = getattr(engine.enhancer, "_session", None)
-    for name, sess in sessions.items():
-        if sess is not None:
-            typer.echo(f"  {name:14} runs on {session_provider(sess)}")
-
-    processor = engine.frame_processor(FrameOptions())
-    tracked = TrackedProcessor(processor, source, float(info.fps),
-                               TrackingOptions(select="reference", detect_every=detect_every), reference_embedding=source[None])
-    end = min(info.nb_frames, start + frames)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / ("bench" + get_preset(fmt).ext)
-        res = _run(lambda: render_video(tracked, target, out, RenderSettings(format=fmt, encoder=encoder, start=start,
-                                                                              end=end), progress=_progress_bar()))
-    typer.echo(f"\n{res.frames} frames in {res.seconds:.1f} s  ->  {res.fps:.2f} fps "
-               f"({info.width}x{info.height}, {res.frames_with_faces} with faces)")
-    typer.echo(f"{'stage':16}{'ms/frame':>10}{'ms/call':>10}{'calls':>8}")
-    for stage, t in res.timings.items():
-        typer.echo(f"{stage:16}{t['ms_per_frame']:>10}{t['ms_per_call']:>10}{t['calls']:>8}")
+    result = _run(lambda: run_bench(target, frames, start, mask, enhance, detect_every, fmt, encoder, device,
+                                    progress=_progress_bar()))
+    typer.echo("\n" + summary_text(result))
 
 
 @log_app.command("verify")

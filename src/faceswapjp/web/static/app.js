@@ -28,6 +28,8 @@ const I = {
   next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>',
+  gauge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/><path d="M4 18h2M18 18h2M12 10V8"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
 };
 
@@ -148,9 +150,10 @@ function renderRail() {
     <div class="grow"></div>
     <button class="rail-link" data-open="batch">${I.layers}<span>まとめて処理</span></button>
     <button class="rail-link" data-open="log">${I.list}<span>同意の記録</span></button>
+    <button class="rail-link" data-open="perf">${I.gauge}<span>速度チェック</span></button>
     <div class="rail-foot">${I.lock}<span>v${esc(S.env?.version || "")} · すべてローカルで処理</span></div>`;
   $$(".step", $("#rail")).forEach((b) => b.onclick = () => goStep(+b.dataset.step));
-  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => (b.dataset.open === "batch" ? openBatch() : openLog()));
+  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => ({ batch: openBatch, log: openLog, perf: openPerf })[b.dataset.open]());
 }
 
 function goStep(i) {
@@ -686,7 +689,7 @@ function renderJob() {
   const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
   const stats = j.total && j.done ? `${j.done} / ${j.total} フレーム · ${j.fps} fps · 残り ${fmtSec(j.eta)}` : j.message || "準備中…";
   bar.innerHTML = `
-    <div class="title"><div class="spinner"></div>${esc(j.kind === "download" ? j.title : "書き出し中：" + j.title)}</div>
+    <div class="title"><div class="spinner"></div>${esc(j.kind === "download" ? j.title : j.kind === "bench" ? "速度チェック中" : j.kind === "batch" ? "まとめて処理中：" + j.title : "書き出し中：" + j.title)}</div>
     <button class="btn sm danger" id="job-cancel">中止</button>
     <div class="bar ${j.done ? "" : "indet"}"><i style="width:${pct}%"></i></div>
     <div class="stats num">${esc(stats)}</div>`;
@@ -845,6 +848,90 @@ async function openLog() {
       }).join("")}</table></div>`);
 }
 
+// ---------------------------------------------------------------------------- performance check
+const perf = { frames: 48, keep_front: null, sharpen: null, last: null };
+function openPerf() {
+  const t = S.target;
+  if (perf.keep_front === null) { perf.keep_front = S.look.keep_front; perf.sharpen = S.look.sharpen; }
+  const ready = t && t.kind === "video";
+  const providers = (S.env?.providers || []).map((p) => p.replace("ExecutionProvider", ""));
+  modal(`
+    <div class="modal-head"><div><div class="eyebrow">PERFORMANCE</div><h2>速度チェック</h2>
+      <p>このパソコンでどれくらいの速さで処理できるかを測ります。読み込んだ動画の一部を実際に処理し、ファイルは残しません。</p></div>
+      <button class="btn ghost icon-btn" data-close>${I.x}</button></div>
+    <div class="modal-body">
+      <div class="card"><dl class="kv">
+        <dt>使える実行環境</dt><dd>${esc(providers.join(" → ") || "–")}</dd>
+        <dt>測る素材</dt><dd>${ready ? esc(t.name) + `（${t.width}×${t.height}）` : "未選択"}</dd>
+      </dl></div>
+      ${ready ? `
+      <div class="field"><span>測るフレーム数</span><div class="seg" id="pf-frames">
+        ${[24, 48, 96].map((n) => `<button data-n="${n}" class="${perf.frames === n ? "on" : ""}">${n} フレーム</button>`).join("")}</div>
+        <div class="hint">多いほど正確ですが、時間がかかります。</div></div>
+      <label class="switch"><span class="txt"><b>手や髪を顔の前に残す</b><small>仕上がり設定と同じ条件で測ります</small></span>
+        <input type="checkbox" id="pf-front" ${perf.keep_front ? "checked" : ""}><span class="tog"></span></label>
+      <label class="switch"><span class="txt"><b>顔をくっきり補正</b><small>オンにすると遅くなります</small></span>
+        <input type="checkbox" id="pf-sharp" ${perf.sharpen ? "checked" : ""}><span class="tog"></span></label>`
+      : `<div class="note warn">${I.alert}<div>先に「2. 素材」で、顔が映っている動画を読み込んでください。</div></div>`}
+      ${perf.last ? `<button class="btn ghost sm" id="pf-last" style="align-self:flex-start">前回の結果を見る</button>` : ""}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-close>閉じる</button>
+      ${ready ? `<button class="btn primary" id="pf-run">${I.gauge} 測定を開始</button>` : `<button class="btn primary" id="pf-media">素材を選ぶ</button>`}</div>`,
+  (m) => {
+    $$("[data-n]", m).forEach((b) => b.onclick = () => { perf.frames = +b.dataset.n; $$("[data-n]", m).forEach((x) => x.classList.toggle("on", x === b)); });
+    const fr = $("#pf-front", m); if (fr) fr.onchange = () => { perf.keep_front = fr.checked; };
+    const sh = $("#pf-sharp", m); if (sh) sh.onchange = () => { perf.sharpen = sh.checked; };
+    const last = $("#pf-last", m); if (last) last.onclick = () => showPerf(perf.last);
+    const media = $("#pf-media", m); if (media) media.onclick = () => { m.close(); goStep(1); };
+    const run = $("#pf-run", m);
+    if (run) run.onclick = async () => {
+      if (S.job) return toast("ほかの処理が終わってから測定してください", "err");
+      const r = await attempt(() => api("/api/bench", { body: { target: S.target.id, frames: perf.frames, keep_front: perf.keep_front, sharpen: perf.sharpen } }));
+      if (!r) return;
+      m.close();
+      S.job = r; renderAll();
+      pollJob(r.id, (job) => {
+        if (job.status === "done") { perf.last = job.result; showPerf(job.result); }
+        else if (job.status === "error") toast(job.message, "err", 10000);
+      });
+    };
+  });
+}
+
+function showPerf(r) {
+  const stages = Object.entries(r.timings).filter(([k]) => k !== "swap_total" && r.timings[k].ms_per_frame >= 0.5);
+  const max = Math.max(...stages.map(([, v]) => v.ms_per_frame), 1);
+  const providerClass = (p) => (/CPU/.test(p) ? "warn" : "ok");
+  const swapOnCpu = r.runs_on.swapper && /CPU/.test(r.runs_on.swapper) && r.providers.some((p) => !/CPU/.test(p));
+  modal(`
+    <div class="modal-head"><div><div class="eyebrow">PERFORMANCE</div><h2>測定結果</h2><p>${esc(r.machine)}</p></div>
+      <button class="btn ghost icon-btn" data-close>${I.x}</button></div>
+    <div class="modal-body">
+      <div class="perf-hero">
+        <div><div class="perf-num num">${r.fps}<small> fps</small></div><div class="hint">1 秒あたりに処理できるフレーム数</div></div>
+        <div><div class="perf-num num">${r.minutes_per_minute ?? "–"}<small> 分</small></div><div class="hint">1 分の素材（${r.source_fps} fps）にかかる目安</div></div>
+      </div>
+      <div class="section"><div class="label">AI が動いている場所</div>
+        <div class="chips">${Object.entries(r.runs_on).map(([k, v]) => `<span class="chip-p ${providerClass(v)}">${esc(k)} · ${esc(v)}</span>`).join("")}</div>
+        ${swapOnCpu ? `<div class="note warn">${I.alert}<div>顔の差し替え AI が CPU で動いています。この結果をコピーして送ってもらえれば、原因を調べられます。</div></div>` : ""}</div>
+      <div class="section"><div class="label">時間がかかっている処理（1 フレームあたり）</div>
+        <div class="bars">${stages.map(([k, v]) => `
+          <div class="bar-row"><span>${esc(r.labels[k] || k)}</span>
+            <div class="bar-track"><i style="width:${(v.ms_per_frame / max) * 100}%"></i></div>
+            <span class="num">${v.ms_per_frame} ms</span></div>`).join("")}</div></div>
+      <div class="hint">${r.resolution} · ${r.frames} フレームを ${r.seconds} 秒で処理 · モデル読み込み ${r.load_s} 秒</div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="pf-again">もう一度測る</button>
+      <button class="btn primary" id="pf-copy">${I.copy} 結果をコピー</button></div>`,
+  (m) => {
+    $("#pf-again", m).onclick = () => openPerf();
+    $("#pf-copy", m).onclick = async () => {
+      try { await navigator.clipboard.writeText(r.text); toast("結果をコピーしました。チャットに貼り付けて送ってください", "ok"); }
+      catch { const ta = document.createElement("textarea"); ta.value = r.text; m.append(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("結果をコピーしました", "ok"); }
+    };
+  });
+}
+
 function resetForProject() {
   Object.assign(S, { identity: null, preview: null, result: null });
 }
@@ -853,6 +940,22 @@ function resetForProject() {
 $("#project").onchange = async (e) => { resetForProject(); S.project = e.target.value; await loadIdentities(); renderAll(); };
 $("#new-project").onclick = openNewProject;
 $("#keys-btn").onclick = openKeys;
+$("#device-pill").onclick = () => openPerf();
+$("#quit-btn").onclick = () => {
+  modal(`<div class="modal-head"><div><div class="eyebrow">QUIT</div><h2>faceswapjp を終了しますか？</h2>
+      <p>${S.job ? "<b>処理中のものは中止されます。</b>" : ""}もう一度使うときは、アプリ（または起動用ファイル）をダブルクリックしてください。</p></div>
+      <button class="btn ghost icon-btn" data-close>${I.x}</button></div>
+    <div class="modal-foot"><button class="btn ghost" data-close>キャンセル</button><button class="btn primary" id="quit-yes">終了する</button></div>`,
+  (m) => {
+    $("#quit-yes", m).onclick = async () => {
+      await attempt(() => api("/api/shutdown", { method: "POST" }));
+      m.close();
+      document.body.innerHTML = `<div style="height:100vh;display:grid;place-items:center;text-align:center;color:#b4b4c2;font:15px/1.7 var(--font)">
+        <div><div class="brand-mark" style="width:48px;height:48px;margin:0 auto 18px;border-radius:14px"></div>
+        <div style="font-size:20px;color:#ededf2;font-weight:650">faceswapjp を終了しました</div>このタブは閉じてかまいません。</div></div>`;
+    };
+  });
+};
 (async () => {
   await attempt(() => loadProjects());
   if (!S.env) return;

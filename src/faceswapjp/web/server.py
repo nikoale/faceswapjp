@@ -535,6 +535,33 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
 
         return ctx.submit("batch", folder.name, run).public()
 
+    @app.post("/api/bench")
+    async def bench(request: Request):
+        from ..bench import run_bench, summary_text
+
+        body = await request.json()
+        t = ctx.target(body.get("target", ""))
+        if t.kind != "video":
+            raise ApiError("速度チェックには動画を読み込んでください")
+        frames = max(12, min(int(body.get("frames") or 48), 240))
+
+        def run(job: Job):
+            job.total = frames
+            job.message = "AI モデルを準備しています…"
+
+            def progress(d, total):
+                job.done, job.total, job.message = d, total, "測定中…"
+
+            result = run_bench(t.path, frames=frames, start=int(body.get("start") or 0),
+                               masks="box,occlusion,region" if body.get("keep_front") else "box",
+                               enhancer="gfpgan" if body.get("sharpen") else None,
+                               detect_every=int(body.get("detect_every") or 3), device=ctx.device,
+                               progress=progress, cancel=job.cancel)
+            result["text"] = summary_text(result)
+            return result
+
+        return ctx.submit("bench", "速度チェック", run).public()
+
     @app.get("/api/jobs/{jid}")
     def job_status(jid: str):
         if jid not in ctx.jobs:
@@ -560,6 +587,17 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         if not p.is_file():
             raise ApiError("ファイルが見つかりません", 404)
         return FileResponse(p)
+
+    @app.post("/api/shutdown")
+    def shutdown():
+        """Stop the local server (the UI's 終了 button). Running jobs are cancelled."""
+        import os
+        import signal
+
+        for job in ctx.jobs.values():
+            job.cancel.set()
+        threading.Timer(0.6, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+        return {"ok": True}
 
     @app.post("/api/reveal")
     async def reveal_file(request: Request):
