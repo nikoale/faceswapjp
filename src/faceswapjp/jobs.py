@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import config
 from .analysis.face import Face, best_similarity
 from .engine import Engine, build_engine
 from .identity import ConsentInfo, Identity, embed_references, load_identity, register_identity
@@ -42,6 +43,7 @@ class SwapJob:
     masks: str = "box"
     enhancer: str | None = None
     device: str = "auto"
+    swapper: str = config.DEFAULT_SWAPPER
 
     def __post_init__(self):
         if (self.reference_images or self.reference_embeddings is not None) and self.tracking.select != "reference":
@@ -53,7 +55,7 @@ class SwapJob:
         r.pop("watermark", None)
         return {
             "frame": asdict(self.frame), "tracking": asdict(self.tracking), "render": r,
-            "masks": self.masks, "enhancer": self.enhancer, "watermark": self.render.watermark is not None,
+            "swapper": self.swapper, "masks": self.masks, "enhancer": self.enhancer, "watermark": self.render.watermark is not None,
         }
 
 
@@ -62,15 +64,15 @@ _ENGINE_LOCK = threading.Lock()
 
 
 def get_engine(project: Project | None, device: str = "auto", masks: str = "box", enhancer: str | None = None,
-               with_swapper: bool = True) -> Engine:
+               with_swapper: bool = True, swapper: str = config.DEFAULT_SWAPPER) -> Engine:
     """Engines are expensive to load, so they are cached per configuration (license check runs every time)."""
     from .engine import check_project_licenses
 
-    key = (device, masks, enhancer, with_swapper)
+    key = (device, masks, enhancer, swapper if with_swapper else None)
     with _ENGINE_LOCK:
         if key not in _ENGINES:
             _ENGINES[key] = build_engine(project, device=device, masks=masks, enhancer=enhancer,
-                                         swapper_name=None if not with_swapper else "inswapper_128")
+                                         swapper_name=swapper if with_swapper else None)
         engine = _ENGINES[key]
     check_project_licenses(project, engine.model_names)
     return engine
@@ -113,7 +115,7 @@ def select_still_faces(processor, frame: np.ndarray, job: SwapJob, reference: np
 
 
 def swap_still(project: Project, job: SwapJob, target: Path, output: Path, matte: Path | None = None) -> FrameResult:
-    engine = get_engine(project, job.device, job.masks, job.enhancer)
+    engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     identity, embedding = load_identity(project, job.identity_id)
     frame = read_image(target)
     engine.safety.check_frames([(None, to_detection_image(frame))], str(target))
@@ -130,7 +132,7 @@ def swap_still(project: Project, job: SwapJob, target: Path, output: Path, matte
 
 def preview(project: Project, job: SwapJob, target: Path, frame_index: int = 0) -> tuple[np.ndarray, FrameResult]:
     """Swap one frame (or a still) without writing an output. Returns (original, result)."""
-    engine = get_engine(project, job.device, job.masks, job.enhancer)
+    engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     _, embedding = load_identity(project, job.identity_id)
     processor = engine.frame_processor(job.frame)
     reference = _reference(engine, job)
@@ -166,7 +168,7 @@ def find_faces(project: Project | None, target: Path, frame_index: int = 0, devi
 
 def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progress=None,
                cancel: threading.Event | None = None, on_frame=None) -> RenderResult:
-    engine = get_engine(project, job.device, job.masks, job.enhancer)
+    engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     identity, embedding = load_identity(project, job.identity_id)
     info = probe(target)
     end = job.render.end if job.render.end is not None else info.nb_frames

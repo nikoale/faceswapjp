@@ -17,7 +17,19 @@ def _inswapper(path: Path, providers: list[ProviderSpec]) -> Swapper:
     return InSwapper(path, providers)
 
 
-SWAPPERS: dict[str, SwapperFactory] = {"inswapper_128": _inswapper}
+def _hyperswap(name: str) -> SwapperFactory:
+    def factory(path: Path, providers: list[ProviderSpec]) -> Swapper:
+        from .hyperswap import HyperSwap
+
+        return HyperSwap(path, providers, name)
+
+    return factory
+
+
+SWAPPERS: dict[str, SwapperFactory] = {
+    "inswapper_128": _inswapper,
+    **{f"hyperswap_{v}_256": _hyperswap(f"hyperswap_{v}_256") for v in ("1a", "1b", "1c")},
+}
 
 
 def register(name: str, factory: SwapperFactory) -> None:

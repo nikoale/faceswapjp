@@ -45,14 +45,21 @@ const TYPE_LABEL = { self: "自分自身", consented_person: "出演者（同意
 const TYPE_SHORT = { self: "自分自身", consented_person: "出演者", synthetic: "AI 生成" };
 const QUALITY = [["high", "高画質"], ["standard", "標準"], ["light", "軽量"]];
 const ENCODER = [["auto", "自動"], ["software", "ソフトウェア"], ["hardware", "ハードウェア"]];
-const DETAIL = [[128, "速さ優先"], [256, "高画質"], [512, "最高画質"]];
+const MODELS = [["hyperswap_1c_256", "HyperSwap", "おすすめ。顔を 256px で直接作るので細部がくっきり、処理も速い"],
+  ["inswapper_128", "inswapper（従来）", "以前の版と同じ AI。顔を 128px で作ります"]];
+const DETAIL = {
+  hyperswap_1c_256: [[256, "高画質", "AI の素の解像度（256px）。ほとんどの映像はこれで十分"],
+    [512, "最高画質", "4K の顔アップ向け。約 4 倍の処理時間"]],
+  inswapper_128: [[128, "速さ優先", "AI の素の解像度（128px）。顔が小さい映像ならこれで十分"],
+    [256, "高画質", "顔のアップでも細部が残ります（約 4 倍の処理）"], [512, "最高画質", "4K の顔アップ向け（約 16 倍の処理）"]],
+};
 const MATTE = [["", "なし"], ["luma", "白黒マスク"], ["alpha", "透明付き素材"]];
 
 const S = {
   env: null, project: null, identities: [], identity: null,
   target: null, frame: 0, step: 0,
   who: "pick", faces: [], facesFrame: -1, picked: [],
-  look: { detail: 256, texture: 0.6, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
+  look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
@@ -486,8 +493,10 @@ function sw(key, title, sub, obj = "look") {
 function inspLook() {
   return {
     html: `
-      <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL.map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
-        <small class="muted">${{ 128: "AI の素の解像度（128px）。顔が小さい映像ならこれで十分", 256: "おすすめ。顔のアップでも細部が残ります（約 4 倍の処理）", 512: "4K の顔アップ向け。とても遅くなります（約 16 倍の処理）" }[S.look.detail]}</small></div>
+      <div class="field"><span>差し替え AI</span><div class="seg" id="model">${MODELS.map(([k, l]) => `<button data-model="${k}" class="${S.look.model === k ? "on" : ""}">${l}</button>`).join("")}</div>
+        <small class="muted">${MODELS.find(([k]) => k === S.look.model)[2]}</small></div>
+      <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL[S.look.model].map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
+        <small class="muted">${(DETAIL[S.look.model].find(([k]) => k === S.look.detail) || [])[2] || ""}</small></div>
       ${sw("keep_front", "手や髪を顔の前に残す", "手・髪・小道具が顔に重なる場面向け（おすすめ）")}
       ${sw("sharpen", "顔をくっきり補正", "目元や輪郭をくっきりさせます。強くすると肌がツルッとします")}
       ${slider("texture", "肌の質感", 0, 1, 0.05, "なめらか", "元の映像の質感")}
@@ -509,6 +518,12 @@ function inspLook() {
 const previewSoon = debounce(() => runPreview(), 650);
 function bindLookControls() {
   $$("[data-detail]").forEach((el) => el.onclick = () => { S.look.detail = +el.dataset.detail; renderInspector(); previewSoon(); });
+  $$("[data-model]").forEach((el) => el.onclick = () => {
+    S.look.model = el.dataset.model;
+    const sizes = DETAIL[S.look.model].map(([k]) => k);
+    if (!sizes.includes(S.look.detail)) S.look.detail = sizes[0];
+    renderInspector(); previewSoon();
+  });
   $$("[data-look]").forEach((el) => {
     const key = el.dataset.look;
     if (el.type === "checkbox") el.onchange = () => { S.look[key] = el.checked; renderInspector(); previewSoon(); };
@@ -891,7 +906,7 @@ function openPerf() {
     const run = $("#pf-run", m);
     if (run) run.onclick = async () => {
       if (S.job) return toast("ほかの処理が終わってから測定してください", "err");
-      const r = await attempt(() => api("/api/bench", { body: { target: S.target.id, frames: perf.frames, keep_front: perf.keep_front, sharpen: perf.sharpen, detail: S.look.detail } }));
+      const r = await attempt(() => api("/api/bench", { body: { target: S.target.id, frames: perf.frames, keep_front: perf.keep_front, sharpen: perf.sharpen, detail: S.look.detail, model: S.look.model } }));
       if (!r) return;
       m.close();
       S.job = r; renderAll();

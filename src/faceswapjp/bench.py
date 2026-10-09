@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from . import config
 from .media.ffpipe import FrameReader
 from .media.presets import get_preset
 from .media.probe import probe
@@ -35,6 +36,7 @@ def run_bench(
     encoder: str | None = None,
     device: str = "auto",
     swap_size: int = 256,
+    swapper: str | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -45,7 +47,7 @@ def run_bench(
     from .jobs import get_engine
 
     t0 = time.time()
-    engine = get_engine(None, device, masks, enhancer)
+    engine = get_engine(None, device, masks, enhancer, swapper=swapper or config.DEFAULT_SWAPPER)
     load_s = time.time() - t0
     info = probe(target)
     start = max(0, min(start, info.nb_frames - 1))
@@ -85,7 +87,7 @@ def run_bench(
         "resolution": f"{info.width}x{info.height}",
         "source_fps": round(src_fps, 3),
         "minutes_per_minute": round(src_fps / fps, 1) if fps else None,  # processing minutes for 1 min of footage
-        "settings": {"masks": masks, "enhancer": enhancer, "detect_every": detect_every, "swap_size": swap_size, "format": fmt},
+        "settings": {"masks": masks, "enhancer": enhancer, "detect_every": detect_every, "swap_size": swap_size, "swapper": engine.swapper_name, "format": fmt},
         "timings": res.timings,
         "labels": STAGE_LABELS,
     }

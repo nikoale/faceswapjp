@@ -36,6 +36,7 @@ class ModelSpec:
     license_url: str = ""
     archive: str | None = None
     files: dict[str, str] = field(default_factory=dict)
+    optional: bool = False  # not fetched by a plain `models download`; only when asked for by name
 
     def path(self, root: Path | None = None) -> Path:
         return (root or config.models_dir()) / self.dest

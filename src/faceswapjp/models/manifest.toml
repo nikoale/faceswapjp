@@ -28,6 +28,41 @@ license_url = "https://github.com/deepinsight/insightface/tree/master/examples/i
 [models.inswapper_128.files]
 "inswapper_128.onnx" = "a290273ed497312095dac48cdef20feec9d5208298223dd01288ab202b54bea7"
 
+[models.hyperswap_1c_256]
+kind = "swapper"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1c_256.onnx"
+dest = "hyperswap_1c_256.onnx"
+license = "FaceFusion HyperSwap: ResearchRAIL (research / non-commercial)"
+commercial_use = false
+license_url = "https://github.com/facefusion/facefusion"
+
+[models.hyperswap_1c_256.files]
+"hyperswap_1c_256.onnx" = "5528c2d76fe9986c99d829278987ef9f3a630cb606db7628d02b57b330f406a5"
+
+[models.hyperswap_1a_256]
+kind = "swapper"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1a_256.onnx"
+dest = "hyperswap_1a_256.onnx"
+license = "FaceFusion HyperSwap: ResearchRAIL (research / non-commercial)"
+commercial_use = false
+license_url = "https://github.com/facefusion/facefusion"
+optional = true
+
+[models.hyperswap_1a_256.files]
+"hyperswap_1a_256.onnx" = "c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add"
+
+[models.hyperswap_1b_256]
+kind = "swapper"
+url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.3.0/hyperswap_1b_256.onnx"
+dest = "hyperswap_1b_256.onnx"
+license = "FaceFusion HyperSwap: ResearchRAIL (research / non-commercial)"
+commercial_use = false
+license_url = "https://github.com/facefusion/facefusion"
+optional = true
+
+[models.hyperswap_1b_256.files]
+"hyperswap_1b_256.onnx" = "5124031789c42f71b9558fb71954ef7aedb6da7ed9fac79293e23c61a792a73e"
+
 [models.xseg_1]
 kind = "occluder"
 url = "https://github.com/facefusion/facefusion-assets/releases/download/models-3.1.0/xseg_1.onnx"

@@ -27,7 +27,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__
+from .. import __version__, config
 from ..compositing.blend import from_float, to_float
 from ..identity import SOURCE_TYPES, ConsentError, list_identities, load_identity, validate_consent
 from ..jobs import SwapJob, add_identity, batch, find_faces, is_video, preview, swap_still, swap_video
@@ -226,6 +226,13 @@ def data_url(img: np.ndarray, max_side: int = 160) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(jpeg(img, max_side, 85)).decode()
 
 
+def swapper_name(value: Any) -> str:
+    name = value or config.DEFAULT_SWAPPER
+    if name not in config.SWAPPER_CHOICES:
+        raise ApiError("差し替え AI の指定が正しくありません")
+    return name
+
+
 def swap_size(value: Any) -> int:
     try:
         size = int(value if value not in (None, "") else 256)
@@ -267,6 +274,7 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
         masks="box,occlusion,region" if p.get("keep_front", True) else "box",
         enhancer="gfpgan" if p.get("sharpen") else None,
         device=p.get("device") or "auto",
+        swapper=swapper_name(p.get("model")),
     )
 
 
@@ -336,7 +344,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                 "software": [e.name for e in pr.encoders if not e.hardware and e.name in enc],
                 "hardware": [e.name for e in pr.encoders if e.hardware and e.name in enc],
             })
-        missing = [n for n, s in registry.load_manifest().items() if not registry.present(s)]
+        missing = [n for n, s in registry.load_manifest().items() if not s.optional and not registry.present(s)]
         return {"version": __version__, "projects": ctx.projects(), "missing_models": missing, "ffmpeg": ffmpeg_ok,
                 "providers": provider_names(select_providers(ctx.device)), "formats": formats,
                 "source_types": list(SOURCE_TYPES), "today": date.today().isoformat()}
@@ -344,7 +352,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
     @app.post("/api/models/download")
     def download_models():
         def run(job: Job):
-            missing = [n for n, s in registry.load_manifest().items() if not registry.present(s)]
+            missing = [n for n, s in registry.load_manifest().items() if not s.optional and not registry.present(s)]
             job.total = len(missing)
             for name in missing:
                 job.message = f"{name} をダウンロード中…"
@@ -572,7 +580,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                                masks="box,occlusion,region" if body.get("keep_front") else "box",
                                enhancer="gfpgan" if body.get("sharpen") else None,
                                detect_every=int(body.get("detect_every") or 3), device=ctx.device,
-                               swap_size=swap_size(body.get("detail")),
+                               swap_size=swap_size(body.get("detail")), swapper=swapper_name(body.get("model")),
                                progress=progress, cancel=job.cancel)
             result["text"] = summary_text(result)
             return result

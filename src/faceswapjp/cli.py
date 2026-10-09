@@ -83,7 +83,7 @@ def models_list() -> None:
 @models_app.command("download")
 def models_download(names: Annotated[Optional[list[str]], typer.Argument()] = None) -> None:
     """Download and verify model files (from the URLs in the manifest)."""
-    for name in names or list(registry.load_manifest()):
+    for name in names or [n for n, s in registry.load_manifest().items() if not s.optional]:
         spec = registry.get_spec(name)
         typer.echo(f"{name}: {spec.license}")
         try:
@@ -116,6 +116,7 @@ OnlyPersonOpt = Annotated[Optional[list[Path]], typer.Option("--only-person", he
 RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count as the --only-person.")]
 MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears).")]
 EnhanceOpt = Annotated[Optional[str], typer.Option("--enhance", help="Face restoration: gfpgan")]
+ModelOpt = Annotated[str, typer.Option("--model", help="Swap model: hyperswap_1c_256 (default, 256px), hyperswap_1a_256, hyperswap_1b_256, inswapper_128.")]
 DetailOpt = Annotated[int, typer.Option("--detail", help="Face resolution: 128 (fast), 256 (default), 512 (4K close-ups, ~16x slower).")]
 TextureOpt = Annotated[float, typer.Option("--texture", help="Re-add the footage's own skin texture/grain 0 (off)..1.")]
 EnhanceBlendOpt = Annotated[float, typer.Option(help="Blend of the enhanced face 0..1.")]
@@ -137,7 +138,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
          fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard", detect_every=3,
-         detail=256, texture=0.6):
+         detail=256, texture=0.6, model=None):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -162,6 +163,7 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
         masks=mask,
         enhancer=enhance,
         device=device,
+        swapper=model or config.DEFAULT_SWAPPER,
     )
 
 
@@ -245,6 +247,7 @@ def swap_image_cmd(
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
     enhance_blend: EnhanceBlendOpt = 0.5,
+    model: ModelOpt = config.DEFAULT_SWAPPER,
     detail: DetailOpt = 256,
     texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
@@ -265,7 +268,7 @@ def swap_image_cmd(
     if not target.is_file():
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model)
     result = _run(lambda: swap_still(proj, job, target, out, matte))
     typer.echo(f"replaced {len(result.faces)} face(s) -> {out}")
 
@@ -288,6 +291,7 @@ def swap_video_cmd(
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
     enhance_blend: EnhanceBlendOpt = 0.5,
+    model: ModelOpt = config.DEFAULT_SWAPPER,
     detail: DetailOpt = 256,
     texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
@@ -309,7 +313,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture)
+               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
@@ -333,6 +337,7 @@ def preview(
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
     enhance_blend: EnhanceBlendOpt = 0.5,
+    model: ModelOpt = config.DEFAULT_SWAPPER,
     detail: DetailOpt = 256,
     texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
@@ -353,7 +358,7 @@ def preview(
 
     proj = Project.load(project)
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model)
     original, result = _run(lambda: run_preview(proj, job, target, frame))
     img = np.hstack([original, result.frame]) if compare else result.frame
     out = out.with_suffix(".png")
@@ -378,6 +383,7 @@ def batch(
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
     enhance_blend: EnhanceBlendOpt = 0.5,
+    model: ModelOpt = config.DEFAULT_SWAPPER,
     detail: DetailOpt = 256,
     texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
@@ -401,7 +407,7 @@ def batch(
         _fail(f"not a folder: {input_dir}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail, texture=texture)
+               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail, texture=texture, model=model)
 
     def progress(i, n, done, total):
         if done == total or done % 10 == 0:
@@ -445,6 +451,7 @@ def bench(
     start: Annotated[int, typer.Option(help="First frame.")] = 0,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
+    model: ModelOpt = config.DEFAULT_SWAPPER,
     detail: DetailOpt = 256,
     detect_every: Annotated[int, typer.Option(help="Full face detection every N frames (1 = every frame).")] = 3,
     fmt: FormatOpt = "h264",
@@ -460,7 +467,7 @@ def bench(
     if not target.is_file():
         _fail(f"target not found: {target}")
     result = _run(lambda: run_bench(target, frames, start, mask, enhance, detect_every, fmt, encoder, device,
-                                    swap_size=detail, progress=_progress_bar()))
+                                    swap_size=detail, swapper=model, progress=_progress_bar()))
     typer.echo("\n" + summary_text(result))
 
 

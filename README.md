@@ -20,7 +20,7 @@
 - 設計：[docs/DESIGN.md](docs/DESIGN.md)
 - モデルのライセンス：[docs/MODEL_LICENSES.md](docs/MODEL_LICENSES.md)
 
-> **ライセンス**：既定のモデル（InsightFace buffalo_l / inswapper_128 ほか）は**非商用ライセンス**です。
+> **ライセンス**：既定のモデル（InsightFace buffalo_l / FaceFusion HyperSwap / inswapper_128 ほか）は**非商用ライセンス**です。
 > 自主制作・検証用途に限って使ってください。
 
 ## 進捗
@@ -52,7 +52,7 @@
 brew install python@3.11 ffmpeg
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[mac,ui]"       # NVIDIA 環境では ".[cuda,ui]"
-faceswapjp models download       # ~/.faceswapjp/models に取得して SHA-256 を検証（約 1.2 GB）
+faceswapjp models download       # ~/.faceswapjp/models に取得して SHA-256 を検証（約 1.6 GB）
 faceswapjp doctor                # 実行プロバイダ、エンコーダ、モデルの状態を表示
 ```
 

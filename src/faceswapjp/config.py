@@ -16,5 +16,7 @@ def models_dir() -> Path:
 
 
 DEFAULT_ANALYZER = "buffalo_l"
-DEFAULT_SWAPPER = "inswapper_128"
+DEFAULT_SWAPPER = "hyperswap_1c_256"
+# Swap models offered in the studio (the CLI also accepts hyperswap_1a_256 / hyperswap_1b_256).
+SWAPPER_CHOICES = ("hyperswap_1c_256", "inswapper_128")
 DEFAULT_DET_SIZE = (640, 640)

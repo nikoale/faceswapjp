@@ -11,6 +11,7 @@
 | 顔検出・ランドマーク・特徴量 | InsightFace `buffalo_l`（SCRFD + ArcFace R50 など） | MIT | **非商用研究用途のみ** | ✕ | README に「pretrained models … are for non-commercial research only」とあり、自動ダウンロードした場合も同じ。商用ライセンスは recognition-oss-pack@insightface.ai に問い合わせる（法人メールアドレスのみ受付） |
 | 同上 | InsightFace `antelopev2` | MIT | 非商用研究用途のみ | ✕ | buffalo_l と同じ扱い |
 | スワップ | `inswapper_128.onnx`（InsightFace） | MIT（サンプルコード） | **非商用**（モデル単体の明示的な条文はなく、InsightFace モデル全般の非商用条項が適用される扱い） | ✕ | 公式にはメンテナンスが終了しており、同社の商用製品 Picsi.Ai への移行が案内されている。商用ライセンスは contact@insightface.ai に問い合わせる。用途の審査があり、悪用目的には許諾しないと明記されている |
+| スワップ（既定） | `hyperswap_1c_256.onnx`（FaceFusion HyperSwap、2025） | — | **ResearchRAIL**（FaceFusion のモデル定義に記載。研究向けの Responsible AI License 系。条文の全文は未確認） | ✕ 扱い | 256px で顔を直接生成する。1a / 1b / 1c の 3 種類があり、既定は 1c。条文を確認できていないため、非商用として扱う |
 | 顔補正 | GFPGAN v1.3 / v1.4 | Apache-2.0 | △ | △ | コードは Apache-2.0 だが、学習データ FFHQ は CC BY-NC-SA 4.0。NVIDIA StyleGAN2 由来部分（研究・評価目的のみ）と DFDNet（CC BY-NC-SA 4.0）の条項も同梱されている。Clean 版（v1.3/1.4）は stylegan2-pytorch（MIT）を元にしているが、重みが NC データ由来である点はグレー |
 | 顔補正（代替） | CodeFormer | S-Lab License 1.0 | 同左 | ✕ | 非商用のみ。商用は作者への個別許諾が必要 |
 
@@ -50,7 +51,9 @@ InsightFace 以外のモデルは、FaceFusion プロジェクトが GitHub Rele
 | 名前 | 用途 | 入手元 | 商用 |
 |---|---|---|---|
 | buffalo_l | 検出・特徴量 | deepinsight/insightface v0.7 release | ✕ |
-| inswapper_128 | スワップ | facefusion-assets models-3.0.0 | ✕ |
+| hyperswap_1c_256 | スワップ（既定、256px） | facefusion-assets models-3.3.0 | ✕ 扱い（ResearchRAIL） |
+| hyperswap_1a_256 / 1b_256 | スワップ（任意。名前を指定したときだけダウンロード） | facefusion-assets models-3.3.0 | ✕ 扱い（ResearchRAIL） |
+| inswapper_128 | スワップ（従来、128px） | facefusion-assets models-3.0.0 | ✕ |
 | xseg_1 | オクルージョン（手・小道具） | facefusion-assets models-3.1.0 | ✕ 扱い（重みのライセンス表記なし。DeepFaceLab 系） |
 | bisenet_resnet_34 | 顔領域マスク | facefusion-assets models-3.0.0 | ✕（CelebAMask-HQ） |
 | gfpgan_1_4 | 顔補正（任意） | facefusion-assets models-3.0.0 | ✕ 扱い（FFHQ 由来） |

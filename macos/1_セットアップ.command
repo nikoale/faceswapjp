@@ -10,7 +10,7 @@ say_step() { printf "\n\033[1;36m▶ %s\033[0m\n" "$1"; }
 fail() { printf "\n\033[1;31m✖ %s\033[0m\n" "$1"; echo "このウィンドウの内容をコピーして送ってもらえれば原因を調べます。"; read -r -p "Enter で閉じます"; exit 1; }
 trap 'fail "途中でエラーが起きました（$BASH_COMMAND）"' ERR
 
-echo "faceswapjp のセットアップを始めます。10〜20 分ほどかかります（AI モデル約 1.2 GB のダウンロードを含みます）。"
+echo "faceswapjp のセットアップを始めます。10〜20 分ほどかかります（AI モデル約 1.6 GB のダウンロードを含みます）。"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
 
@@ -35,7 +35,7 @@ fi
 uv venv -q -p 3.11 --allow-existing .venv
 uv pip install -q --python .venv/bin/python -e ".[mac,ui]"
 
-say_step "3/4 AI モデル（約 1.2 GB、初回のみ）"
+say_step "3/4 AI モデル（約 1.6 GB、初回のみ）"
 .venv/bin/faceswapjp models download
 
 say_step "4/4 アプリの作成"
