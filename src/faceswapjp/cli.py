@@ -117,6 +117,7 @@ RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count
 MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears).")]
 EnhanceOpt = Annotated[Optional[str], typer.Option("--enhance", help="Face restoration: gfpgan")]
 DetailOpt = Annotated[int, typer.Option("--detail", help="Face resolution: 128 (fast), 256 (default), 512 (4K close-ups, ~16x slower).")]
+TextureOpt = Annotated[float, typer.Option("--texture", help="Re-add the footage's own skin texture/grain 0 (off)..1.")]
 EnhanceBlendOpt = Annotated[float, typer.Option(help="Blend of the enhanced face 0..1.")]
 MaskBlurOpt = Annotated[float, typer.Option(help="Mask feather, fraction of the face crop.")]
 ColorOpt = Annotated[float, typer.Option(help="Color match strength 0..1.")]
@@ -136,7 +137,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
          fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard", detect_every=3,
-         detail=256):
+         detail=256, texture=0.6):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -151,7 +152,8 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
     return SwapJob(
         identity_id=identity,
         frame=FrameOptions(faces="largest" if select == "largest" else "all", mask_blur=mask_blur,
-                           color_strength=color_strength, enhance_blend=enhance_blend, swap_size=detail),
+                           color_strength=color_strength, enhance_blend=enhance_blend, swap_size=detail,
+                           texture=texture),
         tracking=TrackingOptions(select=select, reference_threshold=ref_threshold, smoothing=smoothing,
                                  detect_every=detect_every),
         render=RenderSettings(format=fmt, encoder=encoder, quality=quality, matte=matte, start=start, end=end,
@@ -242,8 +244,9 @@ def swap_image_cmd(
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
-    enhance_blend: EnhanceBlendOpt = 0.8,
+    enhance_blend: EnhanceBlendOpt = 0.5,
     detail: DetailOpt = 256,
+    texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     watermark: WatermarkOpt = False,
@@ -262,7 +265,7 @@ def swap_image_cmd(
     if not target.is_file():
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture)
     result = _run(lambda: swap_still(proj, job, target, out, matte))
     typer.echo(f"replaced {len(result.faces)} face(s) -> {out}")
 
@@ -284,8 +287,9 @@ def swap_video_cmd(
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
-    enhance_blend: EnhanceBlendOpt = 0.8,
+    enhance_blend: EnhanceBlendOpt = 0.5,
     detail: DetailOpt = 256,
+    texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     smoothing: SmoothingOpt = 0.5,
@@ -305,7 +309,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end, quality, detect_every, detail=detail)
+               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
@@ -328,8 +332,9 @@ def preview(
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
-    enhance_blend: EnhanceBlendOpt = 0.8,
+    enhance_blend: EnhanceBlendOpt = 0.5,
     detail: DetailOpt = 256,
+    texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     watermark: WatermarkOpt = False,
@@ -348,7 +353,7 @@ def preview(
 
     proj = Project.load(project)
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture)
     original, result = _run(lambda: run_preview(proj, job, target, frame))
     img = np.hstack([original, result.frame]) if compare else result.frame
     out = out.with_suffix(".png")
@@ -372,8 +377,9 @@ def batch(
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
-    enhance_blend: EnhanceBlendOpt = 0.8,
+    enhance_blend: EnhanceBlendOpt = 0.5,
     detail: DetailOpt = 256,
+    texture: TextureOpt = 0.6,
     mask_blur: MaskBlurOpt = 0.12,
     color_strength: ColorOpt = 0.5,
     smoothing: SmoothingOpt = 0.5,
@@ -395,7 +401,7 @@ def batch(
         _fail(f"not a folder: {input_dir}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail)
+               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail, texture=texture)
 
     def progress(i, n, done, total):
         if done == total or done % 10 == 0:

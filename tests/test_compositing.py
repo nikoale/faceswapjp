@@ -90,3 +90,19 @@ def test_match_color_full_strength_matches_lab_mean():
     lab = lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2LAB).reshape(-1, 3).mean(0)  # noqa: E731
     np.testing.assert_allclose(lab(out), lab(reference), atol=1.0)
     assert match_color(swapped, reference, mask, strength=0.0) is swapped
+
+
+def test_texture_readds_fine_detail_only_inside_mask():
+    from faceswapjp.compositing.blend import paste_back
+
+    rng = np.random.default_rng(0)
+    frame = (rng.random((200, 200, 3)) * 255).astype(np.uint8)
+    crop = np.full((100, 100, 3), 0.5, np.float32)
+    mask = np.zeros((100, 100), np.float32)
+    mask[20:80, 20:80] = 1.0
+    matrix = np.array([[1, 0, -50], [0, 1, -50]], np.float32)
+    flat = paste_back(frame.copy(), crop, mask, matrix)
+    tex = paste_back(frame.copy(), crop, mask, matrix, texture=1.0, texture_sigma=1.5)
+    inside = (slice(80, 120), slice(80, 120))
+    assert tex[inside].std() > flat[inside].std() + 5
+    np.testing.assert_array_equal(tex[:60], frame[:60])  # outside the mask stays bit-identical

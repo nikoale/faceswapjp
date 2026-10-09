@@ -24,11 +24,13 @@ class FrameOptions:
     color_strength: float = 0.5
     min_det_score: float = 0.5
     work_size: int | None = None  # aligned crop size for masks/compositing (default 256, 512 with enhancer)
-    enhance_blend: float = 0.8
+    enhance_blend: float = 0.5
     # Resolution the swap model effectively runs at. Above its native 128 px the aligned crop is
     # split into pixel-interleaved 128 px tiles that are swapped one by one and re-interleaved
     # ("pixel boost"): 256 = 4 swaps, 512 = 16 swaps per face.
     swap_size: int = 256
+    # Re-add the original frame's fine skin texture / grain where the face was upscaled (0 = off).
+    texture: float = 0.6
 
 
 @dataclass
@@ -145,7 +147,10 @@ class FrameProcessor:
         with prof("color"):
             swapped = match_color(swapped, work, mask, self.options.color_strength)
         with prof("paste"):
-            paste_back(frame, swapped, mask, matrix, matte)
+            # Frame pixels covered by one pixel of the swap model's output.
+            frame_px = (w / self.swap_size) / float(np.sqrt(abs(np.linalg.det(matrix[:, :2]))))
+            sigma = 0.5 * frame_px if frame_px > 1.0 else 0.0
+            paste_back(frame, swapped, mask, matrix, matte, texture=self.options.texture, texture_sigma=sigma)
 
     def process(
         self,

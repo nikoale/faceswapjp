@@ -254,8 +254,8 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
     return SwapJob(
         identity_id=p["identity"],
         frame=FrameOptions(mask_blur=float(p.get("blend", 0.12)), color_strength=float(p.get("color", 0.5)),
-                           enhance_blend=float(p.get("enhance_blend", 0.8)),
-                           swap_size=swap_size(p.get("detail"))),
+                           enhance_blend=float(p.get("enhance_blend", 0.5)),
+                           swap_size=swap_size(p.get("detail")), texture=float(p.get("texture", 0.6))),
         tracking=TrackingOptions(select="reference" if who == "pick" else "all",
                                  reference_threshold=float(p.get("strictness", 0.4)),
                                  smoothing=float(p.get("smoothing", 0.5))),

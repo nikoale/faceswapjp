@@ -48,12 +48,18 @@ def paste_back(
     crop_mask: np.ndarray,
     matrix: np.ndarray,
     matte: np.ndarray | None = None,
+    texture: float = 0.0,
+    texture_sigma: float = 0.0,
 ) -> np.ndarray:
     """Composite `crop` (float32 [0,1]) into `frame` in place and return it.
 
     matrix maps frame -> crop. Only pixels with mask > 0 are rewritten, so the rest of the
     frame stays bit-identical. If `matte` (float32 HxW) is given, the warped mask is max-merged
     into it for alpha/matte output.
+
+    texture > 0 adds back the frame's own fine detail (skin texture, sensor grain) finer than
+    `texture_sigma` frame pixels, i.e. the band the upscaled swap cannot produce. The detail is
+    soft-limited so strong edges of the original face (eyes, lips) do not ghost through.
     """
     size = crop.shape[0]
     roi = crop_roi(matrix, size, frame.shape)
@@ -73,6 +79,11 @@ def paste_back(
     region = frame[y0:y1, x0:x1]
     color = region[..., :3]
     orig = to_float(color)
+    if texture > 0 and texture_sigma > 0:
+        high = orig - cv2.GaussianBlur(orig, (0, 0), texture_sigma)
+        limit = 0.04
+        high = limit * np.tanh(high / limit)
+        face = face + texture * high
     blended = orig * (1.0 - alpha[..., None]) + np.clip(face, 0.0, 1.0) * alpha[..., None]
     color[touched] = from_float(blended, frame.dtype)[touched]
     if matte is not None:

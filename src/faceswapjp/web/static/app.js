@@ -52,7 +52,7 @@ const S = {
   env: null, project: null, identities: [], identity: null,
   target: null, frame: 0, step: 0,
   who: "pick", faces: [], facesFrame: -1, picked: [],
-  look: { detail: 256, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.8 },
+  look: { detail: 256, texture: 0.6, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
@@ -489,7 +489,8 @@ function inspLook() {
       <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL.map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
         <small class="muted">${{ 128: "AI の素の解像度（128px）。顔が小さい映像ならこれで十分", 256: "おすすめ。顔のアップでも細部が残ります（約 4 倍の処理）", 512: "4K の顔アップ向け。とても遅くなります（約 16 倍の処理）" }[S.look.detail]}</small></div>
       ${sw("keep_front", "手や髪を顔の前に残す", "手・髪・小道具が顔に重なる場面向け（おすすめ）")}
-      ${sw("sharpen", "顔をくっきり補正", "解像感を上げます。処理は遅くなります")}
+      ${sw("sharpen", "顔をくっきり補正", "目元や輪郭をくっきりさせます。強くすると肌がツルッとします")}
+      ${slider("texture", "肌の質感", 0, 1, 0.05, "なめらか", "元の映像の質感")}
       ${slider("blend", "境目のなじませ", 0.04, 0.3, 0.01, "くっきり", "なめらか")}
       ${slider("color", "肌の色を周りに合わせる", 0, 1, 0.05, "弱い", "強い")}
       <details class="more"><summary>詳細設定</summary><div class="inner">
