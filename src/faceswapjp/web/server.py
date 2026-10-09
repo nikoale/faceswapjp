@@ -6,6 +6,7 @@ and a localhost Host header, so other websites open in the same browser cannot d
 """
 
 import base64
+import hashlib
 import secrets
 import shutil
 import subprocess
@@ -308,10 +309,14 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
     async def any_error(_, exc: Exception):
         return JSONResponse({"error": friendly(exc)}, status_code=400)
 
+    # Changes whenever the UI files change, so browsers never keep showing an older studio.
+    assets = hashlib.sha1(b"".join((STATIC / n).read_bytes() for n in ("app.js", "app.css"))).hexdigest()[:10]
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         html = (STATIC / "index.html").read_text(encoding="utf-8")
-        return html.replace("__FSJ_TOKEN__", token).replace("__FSJ_VERSION__", __version__)
+        html = html.replace("__FSJ_TOKEN__", token).replace("__FSJ_VERSION__", __version__)
+        return HTMLResponse(html.replace("__FSJ_ASSETS__", assets), headers={"Cache-Control": "no-store"})
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 

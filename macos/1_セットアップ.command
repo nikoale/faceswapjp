@@ -39,6 +39,9 @@ say_step "3/4 AI モデル（約 1.2 GB、初回のみ）"
 .venv/bin/faceswapjp models download
 
 say_step "4/4 アプリの作成"
+# Stop a studio that is still running from an older copy, so the new version is what opens next.
+OLD_PIDS="$(lsof -ti tcp:7860 -sTCP:LISTEN 2>/dev/null || true)"
+if [ -n "$OLD_PIDS" ]; then kill $OLD_PIDS 2>/dev/null || true; sleep 1; fi
 APP="$HOME/Applications/faceswapjp.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
