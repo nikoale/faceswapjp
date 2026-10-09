@@ -225,6 +225,16 @@ def data_url(img: np.ndarray, max_side: int = 160) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(jpeg(img, max_side, 85)).decode()
 
 
+def swap_size(value: Any) -> int:
+    try:
+        size = int(value if value not in (None, "") else 256)
+    except (TypeError, ValueError):
+        raise ApiError("顔の解像度が正しくありません") from None
+    if size not in (128, 256, 512):
+        raise ApiError("顔の解像度が正しくありません")
+    return size
+
+
 def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
     if not p.get("identity"):
         raise ApiError("使う顔を選んでください")
@@ -244,7 +254,8 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
     return SwapJob(
         identity_id=p["identity"],
         frame=FrameOptions(mask_blur=float(p.get("blend", 0.12)), color_strength=float(p.get("color", 0.5)),
-                           enhance_blend=float(p.get("enhance_blend", 0.8))),
+                           enhance_blend=float(p.get("enhance_blend", 0.8)),
+                           swap_size=swap_size(p.get("detail"))),
         tracking=TrackingOptions(select="reference" if who == "pick" else "all",
                                  reference_threshold=float(p.get("strictness", 0.4)),
                                  smoothing=float(p.get("smoothing", 0.5))),
@@ -556,6 +567,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                                masks="box,occlusion,region" if body.get("keep_front") else "box",
                                enhancer="gfpgan" if body.get("sharpen") else None,
                                detect_every=int(body.get("detect_every") or 3), device=ctx.device,
+                               swap_size=swap_size(body.get("detail")),
                                progress=progress, cancel=job.cancel)
             result["text"] = summary_text(result)
             return result

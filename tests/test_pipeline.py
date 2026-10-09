@@ -73,3 +73,20 @@ def test_swap_image_without_face_fails(tmp_path, solid_swapper):
     cv2.imwrite(str(target), np.zeros((50, 50, 3), np.uint8))
     with pytest.raises(ValueError, match="no target face"):
         swap_image(FrameProcessor(NoFaces(), solid_swapper), np.zeros(512), target, tmp_path / "o.png")
+
+
+def test_pixel_boost_tiles_at_model_size_and_reassembles():
+    from faceswapjp.pipeline.frame import pixel_boost
+
+    rng = np.random.default_rng(0)
+    crop = rng.random((256, 256, 3), dtype=np.float32)
+    seen = []
+
+    def swap(tile):
+        seen.append(tile.shape)
+        return tile
+
+    out = pixel_boost(swap, crop, 128)
+    assert seen == [(128, 128, 3)] * 4
+    np.testing.assert_array_equal(out, crop)
+    assert pixel_boost(lambda t: t * 0 + 0.5, crop[:128, :128], 128).mean() == 0.5

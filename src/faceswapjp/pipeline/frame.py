@@ -25,6 +25,10 @@ class FrameOptions:
     min_det_score: float = 0.5
     work_size: int | None = None  # aligned crop size for masks/compositing (default 256, 512 with enhancer)
     enhance_blend: float = 0.8
+    # Resolution the swap model effectively runs at. Above its native 128 px the aligned crop is
+    # split into pixel-interleaved 128 px tiles that are swapped one by one and re-interleaved
+    # ("pixel boost"): 256 = 4 swaps, 512 = 16 swaps per face.
+    swap_size: int = 256
 
 
 @dataclass
@@ -53,6 +57,22 @@ def select_faces(faces: list[Face], mode: str, min_score: float) -> list[Face]:
     raise ValueError(f"unknown face selection {mode!r}")
 
 
+def pixel_boost(swap, crop: np.ndarray, base: int) -> np.ndarray:
+    """Run `swap` (base px in, base px out) over an n*base crop as n*n interleaved tiles."""
+    n = crop.shape[0] // base
+    if n <= 1:
+        return swap(crop)
+    out = np.empty_like(crop)
+    for i in range(n):
+        for j in range(n):
+            out[i::n, j::n] = swap(np.ascontiguousarray(crop[i::n, j::n]))
+    if n > 2:
+        # Neighbouring pixels come from different swaps; at 4x4 their small disagreements show
+        # up as a fine mesh. A sub-pixel blur removes it while keeping most of the gained detail.
+        out = cv2.GaussianBlur(out, (0, 0), 0.6)
+    return out
+
+
 def _resize(img: np.ndarray, size: int) -> np.ndarray:
     if img.shape[0] == size:
         return img
@@ -75,7 +95,9 @@ class FrameProcessor:
         self.occluders = list(occluders or [])
         self.enhancer = enhancer
         self.profiler: Profiler = NULL
-        self.work_size = self.options.work_size or (512 if enhancer else max(256, swapper.input_size))
+        base = swapper.input_size
+        self.swap_size = max(base, base * (int(self.options.swap_size) // base))
+        self.work_size = self.options.work_size or max(512 if enhancer else 256, self.swap_size)
         self._box = box_mask(self.work_size, self.options.mask_blur, self.options.mask_padding)
         if enhancer is not None:
             self._to_enh = crop_to_crop(swapper.template, self.work_size, enhancer.template, enhancer.input_size)
@@ -106,7 +128,15 @@ class FrameProcessor:
             matrix = estimate_alignment(face.kps, w, self.swapper.template)
             work = to_float(warp_crop(frame[..., :3], matrix, w))
         with prof("swap"):
-            swapped = _resize(self.swapper.swap(_resize(work, self.swapper.input_size), source_embedding), w)
+            base, size = self.swapper.input_size, self.swap_size
+            if size == w:
+                boost_in = work
+            elif size < w:
+                boost_in = _resize(work, size)
+            else:
+                boost_in = to_float(warp_crop(frame[..., :3], estimate_alignment(face.kps, size, self.swapper.template), size))
+            swapped = pixel_boost(lambda t: self.swapper.swap(t, source_embedding), boost_in, base)
+            swapped = _resize(swapped, w)
         if self.enhancer is not None:
             with prof("enhance"):
                 swapped = self._enhance(swapped)

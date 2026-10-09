@@ -34,6 +34,7 @@ def run_bench(
     fmt: str = "h264",
     encoder: str | None = None,
     device: str = "auto",
+    swap_size: int = 256,
     progress: Callable[[int, int], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
@@ -63,7 +64,7 @@ def run_bench(
         sessions[engine.enhancer.name] = getattr(engine.enhancer, "_session", None)
     runs_on = {name: session_provider(s) for name, s in sessions.items() if s is not None}
 
-    tracked = TrackedProcessor(engine.frame_processor(FrameOptions()), source, float(info.fps),
+    tracked = TrackedProcessor(engine.frame_processor(FrameOptions(swap_size=swap_size)), source, float(info.fps),
                                TrackingOptions(select="reference", detect_every=detect_every),
                                reference_embedding=source[None])
     end = min(info.nb_frames, start + frames)
@@ -84,7 +85,7 @@ def run_bench(
         "resolution": f"{info.width}x{info.height}",
         "source_fps": round(src_fps, 3),
         "minutes_per_minute": round(src_fps / fps, 1) if fps else None,  # processing minutes for 1 min of footage
-        "settings": {"masks": masks, "enhancer": enhancer, "detect_every": detect_every, "format": fmt},
+        "settings": {"masks": masks, "enhancer": enhancer, "detect_every": detect_every, "swap_size": swap_size, "format": fmt},
         "timings": res.timings,
         "labels": STAGE_LABELS,
     }
