@@ -493,6 +493,37 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         return {"before": ctx.put_blob(jpeg(original)), "after": ctx.put_blob(jpeg(result.frame)),
                 "matte": ctx.put_blob(jpeg(matte, 1280)), "faces": len(result.faces)}
 
+    @app.post("/api/scan")
+    async def scan(request: Request):
+        from ..jobs import get_engine
+        from ..scan import scan_video
+
+        body = await request.json()
+        t = ctx.target(body.get("target", ""))
+        if t.kind != "video":
+            raise ApiError("苦手な場面のチェックは動画で使えます")
+        refs = None
+        if body.get("who", "pick") == "pick":
+            refs = np.asarray(body.get("picked") or [], dtype=np.float32)
+            if refs.ndim != 2 or refs.shape[1] != 512:
+                raise ApiError("先に置き換える人を選んでください")
+        project = ctx.project(body.get("project")) if body.get("project") else None
+        threshold = float(body.get("strictness", 0.4))
+        start = int(body.get("in_frame") or 0)
+        out_frame = body.get("out_frame")
+        end = int(out_frame) + 1 if out_frame not in (None, "") else None
+
+        def run(job: Job):
+            job.message = "AI モデルを準備しています…"
+            engine = get_engine(project, ctx.device, "box,occlusion", with_swapper=False)
+
+            def progress(done, total):
+                job.done, job.total, job.message = done, total, f"{done} / {total} 場面を確認中…"
+
+            return scan_video(engine, t.path, refs, threshold, start, end, progress=progress, cancel=job.cancel)
+
+        return ctx.submit("scan", "苦手な場面のチェック", run).public()
+
     @app.get("/api/blob/{bid}")
     def blob(bid: str):
         if bid not in ctx.blobs:

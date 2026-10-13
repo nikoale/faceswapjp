@@ -455,6 +455,33 @@ def ui(
 
 
 @app.command()
+def scan(
+    target: Annotated[Path, typer.Option(help="Video to check.")],
+    only_person: OnlyPersonOpt = None,
+    ref_threshold: RefThresholdOpt = 0.4,
+    device: DeviceOpt = "auto",
+) -> None:
+    """List scenes the swap may struggle with (profile, occluded, lost, small, look-alikes)."""
+    from .identity import embed_references
+    from .jobs import get_engine
+    from .media.probe import probe
+    from .scan import scan_video
+
+    if not target.is_file():
+        _fail(f"target not found: {target}")
+    engine = get_engine(None, device, "box,occlusion", with_swapper=False)
+    refs = None
+    if only_person:
+        refs, _ = embed_references(engine.analyzer, list(only_person))
+    result = _run(lambda: scan_video(engine, target, refs, ref_threshold, progress=_progress_bar()))
+    fps = float(probe(target).fps)
+    issues = result["issues"]
+    typer.echo(f"\n{len(issues)} scene(s) to check ({result['samples']} samples):")
+    for x in issues:
+        typer.echo(f"  {x['start'] / fps:7.2f}s - {x['end'] / fps:7.2f}s  {x['label']}  (frame {x['frame']})")
+
+
+@app.command()
 def bench(
     target: Annotated[Path, typer.Option(help="A video to measure with (use your own footage).")],
     frames: Annotated[int, typer.Option(help="How many frames to process.")] = 48,

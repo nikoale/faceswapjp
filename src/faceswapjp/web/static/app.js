@@ -16,6 +16,7 @@ const I = {
   export: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>',
   upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.6 2.5L16 9.5"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5h.01"/></svg>',
@@ -63,6 +64,7 @@ const S = {
   look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, keep_mouth: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
+  issues: null, issuesKey: "",
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
 };
 
@@ -294,6 +296,7 @@ function renderTimeline() {
       <button class="btn sm icon-btn" id="tl-next" title="1 フレーム進む (→)">${I.next}</button>
       <span class="frameno num" id="tl-fn">${S.frame + 1} / ${t.frames}</span>
       <span class="spacer"></span>
+      <button class="btn sm ghost" id="tl-scan" title="横顔・隠れた場面などを探して印を付けます" ${S.job ? "disabled" : ""}>${I.search} 苦手な場面を探す${S.issues ? `（${S.issues.length}）` : ""}</button>
       <span class="hint">範囲指定</span>
       <button class="btn sm" id="tl-in" title="ここから書き出す (I)">IN <span class="kbd">I</span></button>
       <button class="btn sm" id="tl-out" title="ここまで書き出す (O)">OUT <span class="kbd">O</span></button>
@@ -303,6 +306,7 @@ function renderTimeline() {
       <div class="strip"><div class="thumbs">${thumbs.map((f) => `<img src="${frameUrl(f, 200)}" alt="" loading="lazy">`).join("")}</div></div>
       ${t.audio?.length ? `<div class="wave"><img src="${withToken(`/api/targets/${t.id}/waveform`)}" alt="" onerror="this.parentElement.remove()"></div>` : ""}
       ${inF != null || outF != null ? `<div class="range" style="left:${pct(inF ?? 0)}%;right:${100 - pct(outF ?? t.frames - 1)}%"></div>` : ""}
+      ${(S.issues || []).map((x) => `<div class="issue-mark k-${x.kind}" title="${esc(x.label)}" style="left:${pct(x.start)}%;width:max(3px,${pct(x.end) - pct(x.start)}%)"></div>`).join("")}
       <div class="playhead" id="tl-head" style="left:${pct(S.frame)}%"></div>
       <input type="range" id="tl-range" min="0" max="${t.frames - 1}" value="${S.frame}" aria-label="フレーム">
     </div>`;
@@ -311,6 +315,7 @@ function renderTimeline() {
   $("#tl-prev").onclick = () => setFrame(S.frame - 1);
   $("#tl-next").onclick = () => setFrame(S.frame + 1);
   $("#tl-in").onclick = () => setIn();
+  $("#tl-scan").onclick = () => { if (STEPS[S.step].id !== "look") goStep(STEPS.findIndex((x) => x.id === "look")); runScan(); };
   $("#tl-out").onclick = () => setOut();
   const clr = $("#tl-clear");
   if (clr) clr.onclick = () => { S.out.in = S.out.outp = null; renderTimeline(); renderInspector(); };
@@ -495,6 +500,7 @@ function sw(key, title, sub, obj = "look") {
 function inspLook() {
   return {
     html: `
+      ${S.target?.kind === "video" ? issuesCard() : ""}
       <div class="field"><span>差し替え AI</span><div class="seg" id="model">${MODELS.map(([k, l]) => `<button data-model="${k}" class="${S.look.model === k ? "on" : ""}">${l}</button>`).join("")}</div>
         <small class="muted">${MODELS.find(([k]) => k === S.look.model)[2]}</small></div>
       <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL[S.look.model].map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
@@ -516,11 +522,57 @@ function inspLook() {
       <div class="hint">設定を変えると自動でプレビューを作り直します。タイムラインで場面を変えて確認できます。</div>`,
     bind() {
       bindLookControls();
+      bindIssues();
       $("#refresh").onclick = runPreview;
     },
   };
 }
 const previewSoon = debounce(() => runPreview(), 650);
+
+// ---------------------------------------------------------------------------- weak-scene check
+const issuesKey = () => JSON.stringify([S.target?.id, S.who, S.picked.length, S.look.strictness, S.out.in, S.out.outp]);
+function issuesCard() {
+  const list = S.issues;
+  const stale = list && S.issuesKey !== issuesKey();
+  let body = `<small class="muted">横顔・手で隠れた場面・人物を見失った場面などを探して、タイムラインに印を付けます。</small>`;
+  if (list && !list.length) body = `<div class="issues-ok">${I.check}<span>気になる場面は見つかりませんでした</span></div>`;
+  if (list && list.length) {
+    body = `<div class="issues">${list.map((x, i) => `
+      <button class="issue k-${x.kind}" data-issue="${i}" title="${esc(x.hint)}">
+        <i></i><span><b>${esc(x.label)}</b><small>${tcAt(x.start)} – ${tcAt(x.end)}</small></span>${I.next}</button>`).join("")}</div>
+      <small class="muted">クリックするとその場面のプレビューを作ります。</small>`;
+  }
+  return `<div class="card issues-card"><div class="row-between"><b>苦手な場面チェック</b>
+      ${list ? `<span class="pill sm">${list.length} か所</span>` : ""}</div>
+    ${stale ? `<small class="warn">設定が変わりました。もう一度チェックしてください。</small>` : ""}
+    ${body}
+    <button class="btn block ${list && !stale ? "ghost" : ""}" id="scan-btn" ${S.job ? "disabled" : ""}>${I.search} ${list ? "もう一度チェック" : "苦手な場面を探す"}</button></div>`;
+}
+function bindIssues() {
+  const b = $("#scan-btn");
+  if (b) b.onclick = runScan;
+  $$("[data-issue]").forEach((el) => el.onclick = () => {
+    const x = S.issues[+el.dataset.issue];
+    toast(x.hint, "info", 5000);
+    setFrame(x.frame);
+    runPreview();
+  });
+}
+async function runScan() {
+  if (S.job) { toast("ほかの処理が終わってから実行してください", "info"); return; }
+  if (S.who === "pick" && !S.picked.length) { toast("先に「置き換える人」を選んでください", "err"); return; }
+  const key = issuesKey();
+  const r = await attempt(() => api("/api/scan", { body: payload() }));
+  if (!r) return;
+  S.job = r; renderJob(); renderInspector();
+  pollJob(r.id, (job) => {
+    if (job.status === "done") {
+      S.issues = job.result.issues; S.issuesKey = key;
+      toast(S.issues.length ? `${S.issues.length} か所の気になる場面が見つかりました` : "気になる場面は見つかりませんでした", "ok");
+      renderTimeline();
+    } else if (job.status === "error") toast(job.message, "err", 10000);
+  });
+}
 function bindLookControls() {
   $$("[data-detail]").forEach((el) => el.onclick = () => { S.look.detail = +el.dataset.detail; renderInspector(); previewSoon(); });
   $$("[data-model]").forEach((el) => el.onclick = () => {
@@ -621,7 +673,7 @@ async function loadTarget(promise) {
   const t = await attempt(() => promise);
   S.busy = "";
   if (t) {
-    Object.assign(S, { target: t, frame: 0, faces: [], facesFrame: -1, preview: null, result: null, view: "frame" });
+    Object.assign(S, { target: t, frame: 0, faces: [], facesFrame: -1, preview: null, result: null, view: "frame", issues: null });
     S.out.in = S.out.outp = null;
     toast(`「${t.name}」を読み込みました`, "ok", 3000);
   }
@@ -712,7 +764,7 @@ function renderJob() {
   if (!j || (j.kind === "render" && j.live > 0)) { bar.classList.add("hidden"); return; }
   bar.classList.remove("hidden");
   const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
-  const steps = ["download", "update"].includes(j.kind);
+  const steps = ["download", "update", "scan"].includes(j.kind);
   const stats = j.total && j.done && !steps ? `${j.done} / ${j.total} フレーム · ${j.fps} fps · 残り ${fmtSec(j.eta)}` : j.message || "準備中…";
   bar.innerHTML = `
     <div class="title"><div class="spinner"></div>${esc(steps ? j.title + "中" : j.kind === "bench" ? "速度チェック中" : j.kind === "batch" ? "まとめて処理中：" + j.title : "書き出し中：" + j.title)}</div>
