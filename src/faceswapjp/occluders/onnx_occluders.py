@@ -2,6 +2,7 @@
 
 - xseg: DeepFaceLab-style XSeg occlusion segmentation (face minus occluders)
 - region: BiSeNet face parsing (CelebAMask-HQ classes); keeps only selected face regions
+- mouth: the same parser, inverted: the inside of the mouth (teeth, tongue) stays original
 Both are non-commercial (see docs/MODEL_LICENSES.md).
 """
 
@@ -52,7 +53,9 @@ class RegionOccluder:
     _mean = np.array([0.485, 0.456, 0.406], np.float32)
     _std = np.array([0.229, 0.224, 0.225], np.float32)
 
-    def __init__(self, model_path: Path, providers: list[ProviderSpec], regions: tuple[str, ...] = DEFAULT_REGIONS):
+    def __init__(self, model_path: Path, providers: list[ProviderSpec], regions: tuple[str, ...] = DEFAULT_REGIONS,
+                 invert: bool = False):
+        """invert=True: the listed regions are the ones kept from the original (mask 0 there)."""
         unknown = set(regions) - set(REGIONS)
         if unknown:
             raise ValueError(f"unknown regions {sorted(unknown)}; choose from {', '.join(REGIONS)}")
@@ -61,6 +64,9 @@ class RegionOccluder:
         self._input = inp.name
         self._size = int(inp.shape[2])  # NCHW
         self._ids = [REGIONS[r] for r in regions]
+        self._invert = invert
+        if invert:
+            self.name = "region-keep-original"
 
     def mask(self, crop_bgr: np.ndarray) -> np.ndarray:
         w = crop_bgr.shape[0]
@@ -68,5 +74,7 @@ class RegionOccluder:
         x = ((x - self._mean) / self._std).transpose(2, 0, 1)[None].astype(np.float32)
         logits = self._session.run(None, {self._input: x})[0][0]
         keep = np.isin(logits.argmax(0), self._ids).astype(np.float32)
+        if self._invert:
+            keep = 1.0 - keep
         keep = _soften(keep, sigma=self._size / 100)
         return cv2.resize(keep, (w, w), interpolation=cv2.INTER_LINEAR).astype(np.float32)

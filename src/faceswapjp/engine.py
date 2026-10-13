@@ -14,7 +14,8 @@ from .project import Project
 from .runtime import ProviderSpec, provider_names, select_providers
 from .safety.nsfw import NSFWClassifier, SafetyGate
 
-OCCLUDER_MODELS = {"occlusion": "xseg_1", "region": "bisenet_resnet_34"}
+# "mouth" keeps the inside of the mouth (teeth, tongue) from the original footage.
+OCCLUDER_MODELS = {"occlusion": "xseg_1", "region": "bisenet_resnet_34", "mouth": "bisenet_resnet_34"}
 ENHANCER_MODELS = {"gfpgan": "gfpgan_1_4"}
 NSFW_MODEL = "open_nsfw"
 
@@ -82,6 +83,7 @@ def build_engine(
         raise ValueError(f"unknown enhancer {enhancer!r}; choose from {', '.join(ENHANCER_MODELS)}")
     names = [analyzer_name, NSFW_MODEL] + ([swapper_name] if swapper_name else [])
     names += [OCCLUDER_MODELS[m] for m in mask_kinds] + ([ENHANCER_MODELS[enhancer]] if enhancer else [])
+    names = list(dict.fromkeys(names))
     check_project_licenses(project, names)
     paths = {n: registry.ensure(n) for n in names}  # fail early if anything is missing
 
@@ -94,10 +96,17 @@ def build_engine(
             from .occluders.onnx_occluders import XSegOccluder
 
             occluders.append(XSegOccluder(paths[OCCLUDER_MODELS[m]], providers))
-        else:
+        elif m == "region":
             from .occluders.onnx_occluders import DEFAULT_REGIONS, RegionOccluder
 
-            occluders.append(RegionOccluder(paths[OCCLUDER_MODELS[m]], providers, regions or DEFAULT_REGIONS))
+            keep = regions or DEFAULT_REGIONS
+            if "mouth" in mask_kinds:  # one parser pass does both: just leave the mouth out
+                keep = tuple(r for r in keep if r != "mouth")
+            occluders.append(RegionOccluder(paths[OCCLUDER_MODELS[m]], providers, keep))
+        elif m == "mouth" and "region" not in mask_kinds:
+            from .occluders.onnx_occluders import RegionOccluder
+
+            occluders.append(RegionOccluder(paths[OCCLUDER_MODELS[m]], providers, ("mouth",), invert=True))
     enh = None
     if enhancer:
         from .enhancers.gfpgan import GFPGANEnhancer

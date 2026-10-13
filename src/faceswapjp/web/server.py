@@ -226,6 +226,10 @@ def data_url(img: np.ndarray, max_side: int = 160) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(jpeg(img, max_side, 85)).decode()
 
 
+def mask_kinds(keep_front: Any, keep_mouth: Any) -> str:
+    return "box" + (",occlusion,region" if keep_front else "") + (",mouth" if keep_mouth else "")
+
+
 def swapper_name(value: Any) -> str:
     name = value or config.DEFAULT_SWAPPER
     if name not in config.SWAPPER_CHOICES:
@@ -272,7 +276,7 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
                               matte=p.get("matte") or None, start=start, end=end,
                               watermark=Watermark() if p.get("watermark") else None),
         reference_embeddings=refs,
-        masks="box,occlusion,region" if p.get("keep_front", True) else "box",
+        masks=mask_kinds(p.get("keep_front", True), p.get("keep_mouth", True)),
         enhancer="gfpgan" if p.get("sharpen") else None,
         device=p.get("device") or "auto",
         swapper=swapper_name(p.get("model")),
@@ -578,7 +582,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                 job.done, job.total, job.message = d, total, "測定中…"
 
             result = run_bench(t.path, frames=frames, start=int(body.get("start") or 0),
-                               masks="box,occlusion,region" if body.get("keep_front") else "box",
+                               masks=mask_kinds(body.get("keep_front"), body.get("keep_mouth", True)),
                                enhancer="gfpgan" if body.get("sharpen") else None,
                                detect_every=int(body.get("detect_every") or 3), device=ctx.device,
                                swap_size=swap_size(body.get("detail")), swapper=swapper_name(body.get("model")),

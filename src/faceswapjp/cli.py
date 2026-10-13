@@ -114,7 +114,7 @@ IdentityOpt = Annotated[str, typer.Option("--identity", help="Identity id (see `
 SelectOpt = Annotated[str, typer.Option("--select", help="all | largest | reference (set automatically by --only-person)")]
 OnlyPersonOpt = Annotated[Optional[list[Path]], typer.Option("--only-person", help="Image(s) of the person to replace; others are left alone.")]
 RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count as the --only-person.")]
-MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears).")]
+MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears), mouth (keep teeth/tongue from the footage).")]
 EnhanceOpt = Annotated[Optional[str], typer.Option("--enhance", help="Face restoration: gfpgan")]
 ModelOpt = Annotated[str, typer.Option("--model", help="Swap model: hyperswap_1c_256 (default, 256px), hyperswap_1a_256, hyperswap_1b_256, inswapper_128.")]
 DetailOpt = Annotated[int, typer.Option("--detail", help="Face resolution: 128 (fast), 256 (default), 512 (4K close-ups, ~16x slower).")]

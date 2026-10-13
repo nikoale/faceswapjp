@@ -60,7 +60,7 @@ const S = {
   env: null, project: null, identities: [], identity: null,
   target: null, frame: 0, step: 0,
   who: "pick", faces: [], facesFrame: -1, picked: [],
-  look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
+  look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, keep_mouth: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
@@ -500,6 +500,7 @@ function inspLook() {
       <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL[S.look.model].map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
         <small class="muted">${(DETAIL[S.look.model].find(([k]) => k === S.look.detail) || [])[2] || ""}</small></div>
       ${sw("keep_front", "手や髪を顔の前に残す", "手・髪・小道具が顔に重なる場面向け（おすすめ）")}
+      ${sw("keep_mouth", "口の中を元の映像のまま残す", "歯・舌・口の開き方をそのまま使います。しゃべる場面におすすめ")}
       ${sw("sharpen", "顔をくっきり補正", "目元や輪郭をくっきりさせます。強くすると肌がツルッとします")}
       ${slider("texture", "肌の質感", 0, 1, 0.05, "なめらか", "元の映像の質感")}
       ${slider("blend", "境目のなじませ", 0.04, 0.3, 0.01, "くっきり", "なめらか")}
@@ -953,7 +954,7 @@ function openPerf() {
     const run = $("#pf-run", m);
     if (run) run.onclick = async () => {
       if (S.job) return toast("ほかの処理が終わってから測定してください", "err");
-      const r = await attempt(() => api("/api/bench", { body: { target: S.target.id, frames: perf.frames, keep_front: perf.keep_front, sharpen: perf.sharpen, detail: S.look.detail, model: S.look.model } }));
+      const r = await attempt(() => api("/api/bench", { body: { target: S.target.id, frames: perf.frames, keep_front: perf.keep_front, keep_mouth: S.look.keep_mouth, sharpen: perf.sharpen, detail: S.look.detail, model: S.look.model } }));
       if (!r) return;
       m.close();
       S.job = r; renderAll();

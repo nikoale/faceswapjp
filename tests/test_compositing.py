@@ -139,3 +139,30 @@ def test_temporal_smoothing_only_where_plate_is_static(fake_analyzer):
                 for _ in range(8)]
         return np.std(outs, axis=0).mean()
     assert flicker(0.8) < 0.7 * flicker(0.0)
+
+
+def test_mouth_region_is_kept_from_original(monkeypatch):
+    from faceswapjp.occluders import onnx_occluders as occ
+
+    class FakeSession:
+        def get_inputs(self):
+            return [type("I", (), {"name": "x", "shape": [1, 3, 64, 64]})()]
+
+        def run(self, _, feeds):
+            logits = np.zeros((1, 19, 64, 64), np.float32)
+            logits[0, 1] = 1.0  # skin everywhere
+            logits[0, 11, 24:40, 16:48] = 5.0  # inner mouth
+            return [logits]
+
+    monkeypatch.setattr(occ, "create_session", lambda path, providers: FakeSession())
+    crop = np.zeros((128, 128, 3), np.float32)
+    keep_mouth = occ.RegionOccluder("x", [], ("mouth",), invert=True).mask(crop)
+    assert keep_mouth[64, 64] < 0.05 and keep_mouth[10, 10] > 0.95  # mouth stays original, rest is swapped
+    no_mouth = occ.RegionOccluder("x", [], tuple(r for r in occ.DEFAULT_REGIONS if r != "mouth")).mask(crop)
+    assert no_mouth[64, 64] < 0.05 and no_mouth[10, 10] > 0.95
+
+
+def test_parse_masks_accepts_mouth():
+    from faceswapjp.engine import parse_masks
+
+    assert parse_masks("box,occlusion,region,mouth") == ["occlusion", "region", "mouth"]
