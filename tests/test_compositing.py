@@ -106,3 +106,36 @@ def test_texture_readds_fine_detail_only_inside_mask():
     inside = (slice(80, 120), slice(80, 120))
     assert tex[inside].std() > flat[inside].std() + 5
     np.testing.assert_array_equal(tex[:60], frame[:60])  # outside the mask stays bit-identical
+
+
+def test_match_shading_transfers_broad_light_only():
+    from faceswapjp.compositing.color import match_shading
+
+    w = 128
+    ramp = np.linspace(0.2, 0.8, w, dtype=np.float32)[None, :, None] * np.ones((w, w, 3), np.float32)
+    flat = np.full((w, w, 3), 0.5, np.float32)
+    mask = np.ones((w, w), np.float32)
+    out = match_shading(flat, ramp, mask, strength=1.0)
+    assert out[:, -10:].mean() - out[:, :10].mean() > 0.3  # picks up the side lighting
+    assert np.allclose(match_shading(flat, ramp, mask, strength=0.0), flat)
+
+
+def test_temporal_smoothing_only_where_plate_is_static(fake_analyzer):
+    from faceswapjp.pipeline.frame import FrameOptions, FrameProcessor
+
+    class Noisy:
+        name, input_size, template = "noisy", 128, "arcface_128"
+
+        def __init__(self):
+            self.rng = np.random.default_rng(0)
+
+        def swap(self, crop, emb):
+            return np.clip(0.5 + self.rng.normal(0, 0.1, crop.shape), 0, 1).astype(np.float32)
+
+    frame = np.full((200, 220, 3), 128, np.uint8)
+    def flicker(t):
+        proc = FrameProcessor(fake_analyzer, Noisy(), FrameOptions(color_strength=0, shading=0, texture=0, temporal=t))
+        outs = [proc.process(frame, np.zeros(512, np.float32), keys=[1]).frame[60:100, 80:120].astype(float)
+                for _ in range(8)]
+        return np.std(outs, axis=0).mean()
+    assert flicker(0.8) < 0.7 * flicker(0.0)

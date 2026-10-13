@@ -10,7 +10,7 @@ from faceswapjp.analysis.face import Face
 
 def test_frame_processor_replaces_face_region(fake_analyzer, solid_swapper):
     frame = np.full((200, 220, 3), 128, np.uint8)
-    proc = FrameProcessor(fake_analyzer, solid_swapper, FrameOptions(color_strength=0))
+    proc = FrameProcessor(fake_analyzer, solid_swapper, FrameOptions(color_strength=0, shading=0))
     res = proc.process(frame, np.zeros(512, np.float32))
     assert len(res.faces) == 1
     assert res.frame[80, 100, 2] > 250 and res.frame[80, 100, 0] < 5  # solid red at face center

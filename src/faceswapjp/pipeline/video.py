@@ -68,6 +68,7 @@ class TrackedProcessor:
         self.tracker = FaceTracker(smoothing=self.options.smoothing)
         self._last_full = -(10**9)
         self._windows: dict[int, tuple[int, int, int, int]] = {}  # track id -> sticky crop window
+        self.processor.reset_history()
 
     def _window_for(self, track_id: int | None, bbox: np.ndarray, shape) -> tuple[int, int, int, int] | None:
         """Keep the crop still while the face stays comfortably inside it; re-center otherwise."""
@@ -164,13 +165,14 @@ class TrackedProcessor:
                 if self.tracker.needs_embedding(face, index, settle, refresh):
                     face.embedding = analyzer.embed(image, face)
         pairs = self.tracker.update(faces, index, self.dt)
-        targets = [face for track, face in pairs if self._is_target(track, pairs)]
+        chosen = [(track, face) for track, face in pairs if self._is_target(track, pairs)]
         if self.options.select != "largest":
             for track in self.tracker.coasting(self.options.coast_frames):
                 if self.options.select == "all" or track.is_target:
-                    targets.append(track.face)
+                    chosen.append((track, track.face))
         with prof("swap_total"):
-            return self.processor.process(frame, self.source_embedding, faces=targets)
+            return self.processor.process(frame, self.source_embedding, faces=[f for _, f in chosen],
+                                          keys=[t.id for t, _ in chosen])
 
 
 @dataclass

@@ -10,7 +10,7 @@ import numpy as np
 from ..analysis.face import Face
 from ..compositing.align import crop_to_crop, estimate_alignment, warp_crop
 from ..compositing.blend import from_float, paste_back, to_float
-from ..compositing.color import match_color
+from ..compositing.color import match_color, match_shading
 from ..compositing.mask import box_mask
 from ..models.interfaces import Enhancer, FaceAnalyzer, Occluder, Swapper
 from ..profiling import NULL, Profiler
@@ -31,6 +31,11 @@ class FrameOptions:
     swap_size: int = 256
     # Re-add the original frame's fine skin texture / grain where the face was upscaled (0 = off).
     texture: float = 0.6
+    # Video only: blend each face with the previous frame's result where the footage itself did
+    # not change, which removes frame-to-frame shimmer of the generated face (0 = off).
+    temporal: float = 0.5
+    # Transfer the plate's broad light and shadow onto the generated face (0 = off).
+    shading: float = 0.5
 
 
 @dataclass
@@ -97,6 +102,7 @@ class FrameProcessor:
         self.occluders = list(occluders or [])
         self.enhancer = enhancer
         self.profiler: Profiler = NULL
+        self._history: dict = {}  # track key -> (work crop, swapped crop, frame->crop matrix)
         base = swapper.input_size
         self.swap_size = max(base, base * (int(self.options.swap_size) // base))
         self.work_size = self.options.work_size or max(512 if enhancer else 256, self.swap_size)
@@ -104,6 +110,25 @@ class FrameProcessor:
         if enhancer is not None:
             self._to_enh = crop_to_crop(swapper.template, self.work_size, enhancer.template, enhancer.input_size)
             self._from_enh = cv2.invertAffineTransform(self._to_enh)
+
+    def reset_history(self) -> None:
+        self._history.clear()
+
+    def _temporal(self, key, work: np.ndarray, swapped: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+        """Pull the generated face toward last frame's result wherever the target footage is unchanged."""
+        strength = self.options.temporal
+        prev = self._history.get(key)
+        if prev is not None and strength > 0:
+            p_work, p_swapped, p_matrix = prev
+            # previous crop -> frame -> current crop
+            rel = (np.vstack([matrix, [0, 0, 1]]) @ np.vstack([cv2.invertAffineTransform(p_matrix), [0, 0, 1]]))[:2]
+            w = work.shape[0]
+            warp = lambda img: cv2.warpAffine(img, rel, (w, w), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            diff = cv2.GaussianBlur(np.abs(work - warp(p_work)).mean(axis=2), (0, 0), 1.5)
+            weight = (strength * np.exp(-((diff / 0.035) ** 2)))[..., None]
+            swapped = swapped * (1.0 - weight) + warp(p_swapped) * weight
+        self._history[key] = (work, swapped, matrix)
+        return swapped
 
     def detect(self, frame: np.ndarray) -> list[Face]:
         return self.analyzer.detect(to_detection_image(frame))
@@ -123,7 +148,8 @@ class FrameProcessor:
         b = self.options.enhance_blend
         return np.clip(crop * (1 - b) + back * b, 0.0, 1.0)
 
-    def swap_face(self, frame: np.ndarray, face: Face, source_embedding: np.ndarray, matte: np.ndarray) -> None:
+    def swap_face(self, frame: np.ndarray, face: Face, source_embedding: np.ndarray, matte: np.ndarray,
+                  key=None) -> None:
         w = self.work_size
         prof = self.profiler
         with prof("align"):
@@ -142,10 +168,14 @@ class FrameProcessor:
         if self.enhancer is not None:
             with prof("enhance"):
                 swapped = self._enhance(swapped)
+        if key is not None:
+            with prof("temporal"):
+                swapped = self._temporal(key, work, swapped, matrix)
         with prof("mask"):
             mask = self.face_mask(work)
         with prof("color"):
             swapped = match_color(swapped, work, mask, self.options.color_strength)
+            swapped = match_shading(swapped, work, mask, self.options.shading)
         with prof("paste"):
             # Frame pixels covered by one pixel of the swap model's output.
             frame_px = (w / self.swap_size) / float(np.sqrt(abs(np.linalg.det(matrix[:, :2]))))
@@ -157,11 +187,16 @@ class FrameProcessor:
         frame: np.ndarray,
         source_embedding: np.ndarray,
         faces: list[Face] | None = None,
+        keys: list | None = None,
     ) -> FrameResult:
+        """keys: one stable id per face (video track ids) to enable temporal smoothing."""
         out = frame.copy()
         matte = np.zeros(frame.shape[:2], dtype=np.float32)
         if faces is None:
             faces = select_faces(self.detect(frame), self.options.faces, self.options.min_det_score)
-        for face in faces:
-            self.swap_face(out, face, source_embedding, matte)
+        for i, face in enumerate(faces):
+            self.swap_face(out, face, source_embedding, matte, keys[i] if keys is not None else None)
+        if keys is not None:  # forget faces that are no longer being replaced
+            for k in set(self._history) - set(keys):
+                del self._history[k]
         return FrameResult(out, matte, faces)

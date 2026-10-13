@@ -263,7 +263,8 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
         identity_id=p["identity"],
         frame=FrameOptions(mask_blur=float(p.get("blend", 0.12)), color_strength=float(p.get("color", 0.5)),
                            enhance_blend=float(p.get("enhance_blend", 0.5)),
-                           swap_size=swap_size(p.get("detail")), texture=float(p.get("texture", 0.6))),
+                           swap_size=swap_size(p.get("detail")), texture=float(p.get("texture", 0.6)),
+                           shading=float(p.get("shading", 0.5)), temporal=float(p.get("temporal", 0.5))),
         tracking=TrackingOptions(select="reference" if who == "pick" else "all",
                                  reference_threshold=float(p.get("strictness", 0.4)),
                                  smoothing=float(p.get("smoothing", 0.5))),
@@ -624,6 +625,47 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         threading.Timer(0.6, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
         return {"ok": True}
 
+    # ---- update ---------------------------------------------------------------------------
+    @app.get("/api/update")
+    def update_check():
+        from .. import updater
+
+        reason = updater.can_update()
+        try:
+            info = updater.check()
+        except updater.UpdateError as exc:
+            raise ApiError(str(exc)) from None
+        return {"current": info.current, "latest": info.latest, "available": info.available, "blocked": reason}
+
+    @app.post("/api/update")
+    def update_apply():
+        import os
+        import signal
+
+        from .. import updater
+
+        if any(j.kind != "update" and j.status == "running" for j in ctx.jobs.values()):
+            raise ApiError("処理中の作業が終わってから更新してください")
+
+        def run(job: Job):
+            job.total = 4
+
+            def progress(msg: str):
+                job.message = msg
+                job.done = min(job.done + 1, 3)
+
+            try:
+                version = updater.apply(progress=progress)
+            except updater.UpdateError as exc:
+                raise ApiError(str(exc)) from None
+            job.message = "再起動しています…"
+            job.done = 4
+            updater.restart_later(updater.relaunch_argv(), getattr(ctx, "port", 7860))
+            threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+            return {"version": version}
+
+        return ctx.submit("update", "アップデート", run).public()
+
     @app.post("/api/reveal")
     async def reveal_file(request: Request):
         p = ctx.within_root(Path((await request.json()).get("path", "")))
@@ -637,6 +679,7 @@ def launch(root: Path, port: int = 7860, device: str = "auto", open_browser: boo
     import uvicorn
 
     app = create_app(root, device)
+    app.state.ctx.port = port
     url = f"http://127.0.0.1:{port}/"
     if open_browser:
         threading.Timer(1.2, lambda: __import__("webbrowser").open(url)).start()

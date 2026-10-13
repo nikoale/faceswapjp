@@ -28,6 +28,7 @@ const I = {
   next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.5 4.5L20 16"/><path d="M20 20v-4h-4"/></svg>',
   gauge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/><path d="M4 18h2M18 18h2M12 10V8"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
@@ -59,7 +60,7 @@ const S = {
   env: null, project: null, identities: [], identity: null,
   target: null, frame: 0, step: 0,
   who: "pick", faces: [], facesFrame: -1, picked: [],
-  look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
+  look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
@@ -159,9 +160,10 @@ function renderRail() {
     <button class="rail-link" data-open="batch">${I.layers}<span>まとめて処理</span></button>
     <button class="rail-link" data-open="log">${I.list}<span>同意の記録</span></button>
     <button class="rail-link" data-open="perf">${I.gauge}<span>速度チェック</span></button>
+    <button class="rail-link" data-open="update">${I.refresh}<span>アップデート</span></button>
     <div class="rail-foot">${I.lock}<span>v${esc(S.env?.version || "")} · すべてローカルで処理</span></div>`;
   $$(".step", $("#rail")).forEach((b) => b.onclick = () => goStep(+b.dataset.step));
-  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => ({ batch: openBatch, log: openLog, perf: openPerf })[b.dataset.open]());
+  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => ({ batch: openBatch, log: openLog, perf: openPerf, update: openUpdate })[b.dataset.open]());
 }
 
 function goStep(i) {
@@ -502,9 +504,11 @@ function inspLook() {
       ${slider("texture", "肌の質感", 0, 1, 0.05, "なめらか", "元の映像の質感")}
       ${slider("blend", "境目のなじませ", 0.04, 0.3, 0.01, "くっきり", "なめらか")}
       ${slider("color", "肌の色を周りに合わせる", 0, 1, 0.05, "弱い", "強い")}
+      ${slider("shading", "光と影を元の映像に合わせる", 0, 1, 0.05, "弱い", "強い")}
       <details class="more"><summary>詳細設定</summary><div class="inner">
         ${slider("strictness", "人物判定の厳しさ", 0.25, 0.7, 0.01, "ゆるい（選んだ人が置き換わらない時）", "厳しい（別人まで置き換わる時）")}
         ${slider("smoothing", "動きのなめらかさ", 0, 1, 0.05, "速い動きに追従", "揺れを抑える")}
+        ${slider("temporal", "ちらつき抑制（動画）", 0, 0.9, 0.05, "くっきり", "ちらつきを抑える")}
         ${S.look.sharpen ? slider("enhance_blend", "補正の強さ", 0, 1, 0.05, "弱い", "強い") : ""}
       </div></details>
       <button class="btn block" id="refresh">${I.sparkle} この場面でプレビューを更新</button>
@@ -707,13 +711,15 @@ function renderJob() {
   if (!j || (j.kind === "render" && j.live > 0)) { bar.classList.add("hidden"); return; }
   bar.classList.remove("hidden");
   const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
-  const stats = j.total && j.done ? `${j.done} / ${j.total} フレーム · ${j.fps} fps · 残り ${fmtSec(j.eta)}` : j.message || "準備中…";
+  const steps = ["download", "update"].includes(j.kind);
+  const stats = j.total && j.done && !steps ? `${j.done} / ${j.total} フレーム · ${j.fps} fps · 残り ${fmtSec(j.eta)}` : j.message || "準備中…";
   bar.innerHTML = `
-    <div class="title"><div class="spinner"></div>${esc(j.kind === "download" ? j.title : j.kind === "bench" ? "速度チェック中" : j.kind === "batch" ? "まとめて処理中：" + j.title : "書き出し中：" + j.title)}</div>
-    <button class="btn sm danger" id="job-cancel">中止</button>
+    <div class="title"><div class="spinner"></div>${esc(steps ? j.title + "中" : j.kind === "bench" ? "速度チェック中" : j.kind === "batch" ? "まとめて処理中：" + j.title : "書き出し中：" + j.title)}</div>
+    ${j.kind === "update" ? "" : `<button class="btn sm danger" id="job-cancel">中止</button>`}
     <div class="bar ${j.done ? "" : "indet"}"><i style="width:${pct}%"></i></div>
     <div class="stats num">${esc(stats)}</div>`;
-  $("#job-cancel").onclick = () => attempt(() => api(`/api/jobs/${j.id}/cancel`, { method: "POST" }));
+  const cancel = $("#job-cancel");
+  if (cancel) cancel.onclick = () => attempt(() => api(`/api/jobs/${j.id}/cancel`, { method: "POST" }));
 }
 
 async function downloadModels() {
@@ -723,6 +729,47 @@ async function downloadModels() {
   pollJob(r.id, async (job) => {
     if (job.status === "done") { toast("準備ができました", "ok"); await loadProjects(); renderAll(); }
     else if (job.status === "error") toast(job.message, "err", 10000);
+  });
+}
+
+// ---------------------------------------------------------------------------- update
+function openUpdate() {
+  const head = (sub) => `<div class="modal-head"><div><div class="eyebrow">UPDATE</div><h2>アップデート</h2><p>${sub}</p></div>
+      <button class="btn ghost icon-btn" data-close>${I.x}</button></div>`;
+  modal(`${head("GitHub に最新版があるか確認しています…（素材や作品のデータは送られません）")}
+    <div class="modal-body"><div class="bar indet"><i></i></div></div>`);
+  api("/api/update").then((u) => {
+    if (!$("#modal").open) return;
+    if (!u.available) {
+      modal(`${head(`最新版です（v${esc(u.current)}）。`)}<div class="modal-foot"><button class="btn primary" data-close>閉じる</button></div>`);
+      return;
+    }
+    const busy = S.job ? "<b>処理中の作業が終わってから更新してください。</b>" : "";
+    modal(`${head(`新しい版 <b>v${esc(u.latest)}</b> があります（今は v${esc(u.current)}）。`)}
+      <div class="modal-body"><div class="hint">${u.blocked ? esc(u.blocked) : `ダウンロードして入れ替えたあと、自動で再起動します。作品や登録した顔はそのまま残ります。${busy}`}</div></div>
+      <div class="modal-foot"><button class="btn ghost" data-close>あとで</button>
+        <button class="btn primary" id="upd-go" ${u.blocked || S.job ? "disabled" : ""}>${I.refresh} 更新する</button></div>`,
+    (m) => { const b = $("#upd-go", m); if (b) b.onclick = () => { m.close(); runUpdate(u.latest); }; });
+  }).catch((e) => { if ($("#modal").open) modal(`${head(esc(e.message))}<div class="modal-foot"><button class="btn primary" data-close>閉じる</button></div>`); });
+}
+async function runUpdate(latest) {
+  const r = await attempt(() => api("/api/update", { method: "POST" }));
+  if (!r) return;
+  S.job = r; renderJob();
+  pollJob(r.id, (job) => {
+    if (job.status === "error") { toast(job.message, "err", 12000); return; }
+    if (job.status !== "done") return;
+    document.body.innerHTML = `<div style="height:100vh;display:grid;place-items:center;text-align:center;color:#b4b4c2;font:15px/1.7 var(--font)">
+      <div><div class="spinner" style="margin:0 auto 18px"></div><div style="font-size:20px;color:#ededf2;font-weight:650">v${esc(latest)} に更新しました</div>再起動しています。このまま少しお待ちください…</div></div>`;
+    const wait = async () => {
+      try {
+        const res = await fetch("/", { cache: "no-store" });
+        const html = res.ok ? await res.text() : "";
+        if (html.includes(`content="${latest}"`)) { location.reload(); return; }
+      } catch (_) { /* server restarting */ }
+      setTimeout(wait, 1000);
+    };
+    setTimeout(wait, 2500);
   });
 }
 
