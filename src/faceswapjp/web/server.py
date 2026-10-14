@@ -94,6 +94,7 @@ class Job:
     message: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     cancel: threading.Event = field(default_factory=threading.Event)
+    detail: dict[str, Any] = field(default_factory=dict)  # shown in the queue (output name, format...)
     base_done: int = 0  # progress taken over from an earlier attempt (not counted in the speed)
     live: bytes | None = None  # latest rendered frame (JPEG) for the live view
     live_version: int = 0
@@ -115,7 +116,7 @@ class Job:
         eta = (self.total - self.done) / rate if rate > 0 and self.total else None
         return {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status, "done": self.done,
                 "total": self.total, "fps": round(rate, 2), "eta": eta, "elapsed": elapsed,
-                "message": self.message, "result": self.result, "live": self.live_version,
+                "message": self.message, "result": self.result, "live": self.live_version, "detail": self.detail,
                 "live_frame": self.live_frame}
 
 
@@ -128,6 +129,7 @@ class Context:
         self.blobs: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
         self.jobs: OrderedDict[str, Job] = OrderedDict()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fsj-job")
+        self.reserved: set[Path] = set()  # outputs of queued/running renders
         self.lock = threading.Lock()
         if not self.projects():
             Project.init(self.root / DEFAULT_PROJECT, DEFAULT_PROJECT)
@@ -189,22 +191,33 @@ class Context:
         return FrameReader(t.info, start=n, count=1).read_one()
 
     # jobs -----------------------------------------------------------------------------------
-    def submit(self, kind: str, title: str, fn) -> Job:
-        job = Job(uuid.uuid4().hex[:12], kind, title)
+    def submit(self, kind: str, title: str, fn, detail: dict | None = None, on_end=None) -> Job:
+        """Jobs run one at a time in submission order; later ones wait as "queued"."""
+        job = Job(uuid.uuid4().hex[:12], kind, title, detail=detail or {})
         with self.lock:
+            ahead = sum(j.status in ("queued", "running") for j in self.jobs.values())
+            job.message = f"順番待ち（{ahead} 件の処理のあとに始まります）" if ahead else "準備中…"
             self.jobs[job.id] = job
-            while len(self.jobs) > 30:
-                self.jobs.popitem(last=False)
+            finished = [k for k, j in self.jobs.items() if j.status in ("done", "error", "cancelled")]
+            for k in finished[:max(0, len(self.jobs) - 30)]:  # forget old finished jobs, never queued ones
+                del self.jobs[k]
 
         def run():
-            job.status, job.started = "running", time.time()
             try:
-                job.result = fn(job) or {}
-                job.status = "cancelled" if job.cancel.is_set() else "done"
-            except InterruptedError:
-                job.status, job.message = "cancelled", "中止しました。途中までのファイルは使えません。"
-            except Exception as exc:  # noqa: BLE001
-                job.status, job.message = "error", friendly(exc)
+                if job.cancel.is_set():  # cancelled while waiting in the queue
+                    job.status, job.message = "cancelled", "開始前に取り消しました"
+                    return
+                job.status, job.started, job.message = "running", time.time(), "準備中…"
+                try:
+                    job.result = fn(job) or {}
+                    job.status = "cancelled" if job.cancel.is_set() else "done"
+                except InterruptedError:
+                    job.status, job.message = "cancelled", "中止しました"
+                except Exception as exc:  # noqa: BLE001
+                    job.status, job.message = "error", friendly(exc)
+            finally:
+                if on_end is not None:
+                    on_end()
 
         self.executor.submit(run)
         return job
@@ -567,13 +580,18 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         return Response(data, media_type=mime)
 
     def output_path(project: Project, t: Target, fmt: str, requested: str | None) -> Path:
+        """A free output name. Names of queued/running renders are taken too, so two queued
+        renders of the same clip don't write to the same file."""
         if requested:
-            return Path(requested).expanduser()
+            out = Path(requested).expanduser()
+            if out.resolve() in ctx.reserved:
+                raise ApiError("同じファイル名の書き出しが順番待ちにあります。別の名前にしてください")
+            return out
         ext = PRESETS[fmt].ext if t.kind == "video" else ".png"
         stem = Path(t.display_name or t.path.name).stem
         out = project.renders_dir / f"{stem}_swap{ext}"
         n = 2
-        while out.exists():
+        while out.exists() or out.resolve() in ctx.reserved:
             out = project.renders_dir / f"{stem}_swap_{n}{ext}"
             n += 1
         return out
@@ -585,6 +603,7 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
         project = ctx.project(body.get("project"))
         job_spec = job_from(body, t)
         out = output_path(project, t, job_spec.render.format, body.get("output"))
+        ctx.reserved.add(out.resolve())
 
         def run(job: Job):
             if t.kind == "video":
@@ -612,7 +631,9 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
             return {"output": str(out), "matte": str(matte) if matte else None, "frames": 1, "warnings": [],
                     "image": True, "url": f"/api/file?path={out}"}
 
-        return ctx.submit("render", t.display_name or t.path.name, run).public()
+        detail = {"output": out.name, "format": job_spec.render.format, "project": project.root.name}
+        return ctx.submit("render", t.display_name or t.path.name, run, detail,
+                          on_end=lambda: ctx.reserved.discard(out.resolve())).public()
 
     @app.post("/api/batch")
     async def run_batch(request: Request):
@@ -663,6 +684,11 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
             return result
 
         return ctx.submit("bench", "速度チェック", run).public()
+
+    @app.get("/api/jobs")
+    def job_list():
+        """Renders and batches, oldest first (the render queue)."""
+        return [j.public() for j in ctx.jobs.values() if j.kind in ("render", "batch")]
 
     @app.get("/api/jobs/{jid}")
     def job_status(jid: str):

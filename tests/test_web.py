@@ -187,3 +187,25 @@ def test_job_from_groups_picked_people_by_face():
     assert job.tracking.select == "reference"
     body["picked_ids"] = [None, None, None]
     assert job_from(body, None).cast is None  # everyone gets the main face: the simple path
+
+
+def test_jobs_queue_in_order_and_can_be_dropped_before_starting(tmp_path):
+    import threading
+    import time
+
+    from faceswapjp.web.server import Context
+
+    ctx = Context(tmp_path, "cpu")
+    gate, ran = threading.Event(), []
+    first = ctx.submit("render", "a", lambda job: (gate.wait(5), ran.append("a")))
+    second = ctx.submit("render", "b", lambda job: ran.append("b"))
+    third = ctx.submit("render", "c", lambda job: ran.append("c"))
+    assert "順番待ち" in second.message and "2 件" in third.message
+    second.cancel.set()  # dropped while still waiting
+    gate.set()
+    for _ in range(100):
+        if third.status == "done":
+            break
+        time.sleep(0.05)
+    assert ran == ["a", "c"]
+    assert (first.status, second.status, third.status) == ("done", "cancelled", "done")

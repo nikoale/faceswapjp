@@ -20,6 +20,7 @@ const I = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.6 2.5L16 9.5"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5h.01"/></svg>',
+  queue: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.5"/><rect x="3" y="11" width="18" height="5" rx="1.5" opacity=".6"/><path d="M6 20h12" opacity=".4"/></svg>',
   layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
@@ -64,7 +65,7 @@ const S = {
   look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, keep_mouth: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
-  issues: null, issuesKey: "",
+  issues: null, issuesKey: "", queue: [],
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
 };
 
@@ -159,13 +160,14 @@ function renderRail() {
       </button>`).join("")}
     </div>
     <div class="grow"></div>
+    <button class="rail-link" data-open="queue">${I.queue}<span>書き出し待ち</span>${queueActive() ? `<b class="badge-n">${queueActive()}</b>` : ""}</button>
     <button class="rail-link" data-open="batch">${I.layers}<span>まとめて処理</span></button>
     <button class="rail-link" data-open="log">${I.list}<span>同意の記録</span></button>
     <button class="rail-link" data-open="perf">${I.gauge}<span>速度チェック</span></button>
     <button class="rail-link" data-open="update">${I.refresh}<span>アップデート</span></button>
     <div class="rail-foot">${I.lock}<span>v${esc(S.env?.version || "")} · すべてローカルで処理</span></div>`;
   $$(".step", $("#rail")).forEach((b) => b.onclick = () => goStep(+b.dataset.step));
-  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => ({ batch: openBatch, log: openLog, perf: openPerf, update: openUpdate })[b.dataset.open]());
+  $$("[data-open]", $("#rail")).forEach((b) => b.onclick = () => ({ batch: openBatch, log: openLog, perf: openPerf, update: openUpdate, queue: openQueue })[b.dataset.open]());
 }
 
 function goStep(i) {
@@ -385,6 +387,7 @@ function renderInspector() {
     <div class="insp-foot">
       ${S.step > 0 ? `<button class="btn ghost" id="back">${I.prev} 戻る</button>` : ""}
       <span style="flex:1"></span>
+      ${nextLabel ? "" : `<button class="btn ghost" id="enqueue" title="今の設定で順番待ちに追加します。前の書き出しが終わると自動で始まります">${I.queue} 順番待ちに追加</button>`}
       ${nextLabel ? `<button class="btn primary" id="next">${nextLabel} ${I.next}</button>`
         : S.job ? `<button class="btn danger" id="cancel-job">${I.x} 書き出しを中止</button>`
         : `<button class="btn primary" id="render">${I.export} 書き出す</button>`}
@@ -403,6 +406,7 @@ function renderInspector() {
   };
   body.bind?.();
   const render = $("#render"); if (render) render.onclick = startRender;
+  const enq = $("#enqueue"); if (enq) enq.onclick = addToQueue;
   const cj = $("#cancel-job"); if (cj) cj.onclick = () => attempt(() => api(`/api/jobs/${S.job.id}/cancel`, { method: "POST" }));
 }
 
@@ -747,10 +751,71 @@ async function runPreview() {
   renderAll();
 }
 
+// ---------------------------------------------------------------------------- render queue
+const queueActive = () => S.queue.filter((j) => j.status === "queued" || j.status === "running").length;
+const queueSeen = new Map();
+async function refreshQueue() {
+  let list;
+  try { list = await api("/api/jobs"); } catch (_) { return; }
+  for (const j of list) {  // tell about renders that finished in the background
+    const before = queueSeen.get(j.id);
+    if (before && before !== j.status && j.id !== S.job?.id) {
+      if (j.status === "done") toast(`「${j.title}」の書き出しが終わりました（${j.detail?.output || ""}）`, "ok");
+      if (j.status === "error") toast(`「${j.title}」: ${j.message}`, "err", 10000);
+    }
+    queueSeen.set(j.id, j.status);
+  }
+  const changed = JSON.stringify(list.map((j) => [j.id, j.status])) !== JSON.stringify(S.queue.map((j) => [j.id, j.status]));
+  S.queue = list;
+  if (changed) renderRail();
+  if ($("#modal").open && $("#queue-list")) $("#queue-list").innerHTML = queueRows();
+  bindQueueRows();
+}
+setInterval(() => { if (!document.hidden && (queueActive() || $("#queue-list"))) refreshQueue(); }, 1500);
+
+async function addToQueue() {
+  if (!S.target || !S.identity) return toast("使う顔と素材を選んでから追加してください", "err");
+  const r = await attempt(() => api("/api/render", { body: payload() }));
+  if (!r) return;
+  queueSeen.set(r.id, r.status);
+  await refreshQueue();
+  toast(`順番待ちに追加しました：${r.detail?.output || r.title}（待ち ${queueActive()} 件）`, "ok");
+}
+function queueRows() {
+  if (!S.queue.length) return `<div class="hint">書き出しはまだありません。「書き出す」の横の「順番待ちに追加」で、続けて何本も予約できます。</div>`;
+  const label = { queued: "待機中", running: "書き出し中", done: "完了", error: "エラー", cancelled: "中止" };
+  return [...S.queue].reverse().map((j) => {
+    const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
+    return `<div class="q-row s-${j.status}">
+      <div class="q-main"><b>${esc(j.title)}</b><small>${esc(j.detail?.output || "")}${j.detail?.format ? " · " + esc(j.detail.format) : ""}</small>
+        ${j.status === "running" ? `<div class="bar"><i style="width:${pct}%"></i></div><small class="num">${esc(j.message || "")}${j.eta ? " · 残り " + fmtSec(j.eta) : ""}</small>`
+          : j.status === "error" || j.status === "queued" ? `<small>${esc(j.message || "")}</small>` : ""}</div>
+      <span class="q-chip">${label[j.status] || j.status}</span>
+      ${["queued", "running"].includes(j.status) ? `<button class="btn sm ghost" data-qcancel="${j.id}">${j.status === "queued" ? "取り消す" : "中止"}</button>`
+        : j.status === "done" && j.result?.output ? `<button class="btn sm ghost" data-qreveal="${esc(j.result.output)}">フォルダで表示</button>` : "<span></span>"}
+    </div>`;
+  }).join("");
+}
+function bindQueueRows() {
+  $$("[data-qcancel]").forEach((b) => b.onclick = async () => {
+    await attempt(() => api(`/api/jobs/${b.dataset.qcancel}/cancel`, { method: "POST" })); refreshQueue();
+  });
+  $$("[data-qreveal]").forEach((b) => b.onclick = () => attempt(() => api("/api/reveal", { body: { path: b.dataset.qreveal } })));
+}
+function openQueue() {
+  modal(`<div class="modal-head"><div><div class="eyebrow">QUEUE</div><h2>書き出し待ち</h2>
+      <p>1 本ずつ順番に書き出します。待機中のものは取り消せます。中止した動画は、同じ設定でもう一度書き出すと続きから再開します。</p></div>
+      <button class="btn ghost icon-btn" data-close>${I.x}</button></div>
+    <div class="modal-body"><div id="queue-list" class="q-list">${queueRows()}</div></div>
+    <div class="modal-foot"><button class="btn primary" data-close>閉じる</button></div>`, () => bindQueueRows());
+  refreshQueue();
+}
+
 async function startRender() {
   const r = await attempt(() => api("/api/render", { body: payload() }));
   if (!r) return;
   S.job = r; S.result = null;
+  queueSeen.set(r.id, r.status); refreshQueue();
   renderAll();
   pollJob(r.id, (job) => {
     if (job.status === "done") { S.result = job.result; toast(job.result.resumed ? "書き出しが終わりました（前回の続きから再開）" : "書き出しが終わりました", "ok"); }
