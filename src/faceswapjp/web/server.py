@@ -262,6 +262,24 @@ def swap_size(value: Any) -> int:
     return size
 
 
+# studio names -> FrameOptions fields that a scene may change
+SCENE_KEYS = {"texture": "texture", "shading": "shading", "color": "color_strength", "blend": "mask_blur",
+              "temporal": "temporal", "enhance_blend": "enhance_blend"}
+
+
+def scenes_from(items: Any) -> list:
+    from ..pipeline.frame import SceneOverride
+
+    scenes = []
+    for item in items or []:
+        try:
+            changes = {SCENE_KEYS[k]: float(v) for k, v in (item.get("changes") or {}).items() if k in SCENE_KEYS}
+            scenes.append(SceneOverride(int(item["start"]), int(item["end"]), changes, bool(item.get("skip"))))
+        except (KeyError, TypeError, ValueError):
+            raise ApiError("場面ごとの設定が正しくありません") from None
+    return scenes
+
+
 def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
     if not p.get("identity"):
         raise ApiError("使う顔を選んでください")
@@ -304,6 +322,7 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
         device=p.get("device") or "auto",
         swapper=swapper_name(p.get("model")),
         cast=cast,
+        scenes=scenes_from(p.get("scenes")),
     )
 
 

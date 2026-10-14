@@ -65,7 +65,7 @@ const S = {
   look: { model: "hyperswap_1c_256", detail: 256, texture: 0.6, shading: 0.5, temporal: 0.5, keep_front: true, keep_mouth: true, sharpen: false, blend: 0.12, color: 0.5, strictness: 0.4, smoothing: 0.5, enhance_blend: 0.5 },
   out: { codec: "h264", quality: "standard", encoder: "auto", matte: "", watermark: false, in: null, outp: null, path: "" },
   preview: null, previewKey: "", view: "frame", split: 50,
-  issues: null, issuesKey: "", queue: [],
+  issues: null, issuesKey: "", queue: [], scenes: [], editScene: null,
   busy: "", busyKind: "", job: null, result: null, enter: true, liveShown: 0, facesFresh: false, justToggled: -1,
 };
 
@@ -135,6 +135,7 @@ function payload(extra = {}) {
   return {
     project: S.project, identity: S.identity, target: S.target?.id, frame: S.frame,
     who: S.who, picked: S.picked.map((p) => p.emb), picked_ids: S.picked.map((p) => p.identity || null), ...S.look,
+    scenes: S.target?.kind === "video" ? S.scenes.map(({ start, end, skip, changes }) => ({ start, end, skip, changes })) : [],
     codec: S.out.codec, quality: S.out.quality, encoder: S.out.encoder, matte: S.out.matte || null,
     watermark: S.out.watermark, in_frame: S.out.in ?? 0, out_frame: S.out.outp, output: S.out.path || null, ...extra,
   };
@@ -308,6 +309,7 @@ function renderTimeline() {
       <div class="strip"><div class="thumbs">${thumbs.map((f) => `<img src="${frameUrl(f, 200)}" alt="" loading="lazy">`).join("")}</div></div>
       ${t.audio?.length ? `<div class="wave"><img src="${withToken(`/api/targets/${t.id}/waveform`)}" alt="" onerror="this.parentElement.remove()"></div>` : ""}
       ${inF != null || outF != null ? `<div class="range" style="left:${pct(inF ?? 0)}%;right:${100 - pct(outF ?? t.frames - 1)}%"></div>` : ""}
+      ${S.scenes.map((sc, i) => `<div class="scene-band ${sc.skip ? "skip" : ""} ${i === S.editScene ? "on" : ""}" title="場面 ${i + 1}：${esc(sceneSummary(sc))}" style="left:${pct(sc.start)}%;width:max(4px,${pct(sc.end) - pct(sc.start)}%)">${i + 1}</div>`).join("")}
       ${(S.issues || []).map((x) => `<div class="issue-mark k-${x.kind}" title="${esc(x.label)}" style="left:${pct(x.start)}%;width:max(3px,${pct(x.end) - pct(x.start)}%)"></div>`).join("")}
       <div class="playhead" id="tl-head" style="left:${pct(S.frame)}%"></div>
       <input type="range" id="tl-range" min="0" max="${t.frames - 1}" value="${S.frame}" aria-label="フレーム">
@@ -503,9 +505,15 @@ function castRow(p, i) {
     <button class="btn ghost icon-btn sm" data-unpick="${i}" title="外す">${I.x}</button></div>`;
 }
 
+const SCENE_KEYS = ["texture", "shading", "color", "blend", "temporal", "enhance_blend"];
+const SCENE_LABELS = { texture: "肌の質感", shading: "光と影", color: "肌の色", blend: "境目", temporal: "ちらつき抑制", enhance_blend: "補正の強さ" };
+const editing = () => (S.editScene != null ? S.scenes[S.editScene] : null);
+const lookVal = (key) => { const sc = editing(); return sc && key in sc.changes ? sc.changes[key] : S.look[key]; };
 function slider(key, label, min, max, step, left, right) {
-  return `<div class="slider"><div class="top"><b>${label}</b><span class="num muted" id="v-${key}">${S.look[key]}</span></div>
-    <input type="range" class="rng" data-look="${key}" min="${min}" max="${max}" step="${step}" value="${S.look[key]}">
+  const sc = editing();
+  const changed = sc && key in sc.changes;
+  return `<div class="slider ${changed ? "scene-changed" : ""}"><div class="top"><b>${label}</b><span class="num muted" id="v-${key}">${lookVal(key)}</span></div>
+    <input type="range" class="rng" data-look="${key}" min="${min}" max="${max}" step="${step}" value="${lookVal(key)}">
     <div class="ends"><span>${left}</span><span>${right}</span></div></div>`;
 }
 function sw(key, title, sub, obj = "look") {
@@ -515,9 +523,11 @@ function sw(key, title, sub, obj = "look") {
 }
 
 function inspLook() {
+  if (editing()) return inspScene();
   return {
     html: `
       ${S.target?.kind === "video" ? issuesCard() : ""}
+      ${S.target?.kind === "video" ? scenesCard() : ""}
       <div class="field"><span>差し替え AI</span><div class="seg" id="model">${MODELS.map(([k, l]) => `<button data-model="${k}" class="${S.look.model === k ? "on" : ""}">${l}</button>`).join("")}</div>
         <small class="muted">${MODELS.find(([k]) => k === S.look.model)[2]}</small></div>
       <div class="field"><span>顔の解像度</span><div class="seg" id="detail">${DETAIL[S.look.model].map(([k, l]) => `<button data-detail="${k}" class="${S.look.detail === k ? "on" : ""}">${l}</button>`).join("")}</div>
@@ -540,6 +550,76 @@ function inspLook() {
     bind() {
       bindLookControls();
       bindIssues();
+      bindScenes();
+      $("#refresh").onclick = runPreview;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------- per-scene settings
+function sceneSummary(sc) {
+  if (sc.skip) return "差し替えない";
+  const parts = Object.entries(sc.changes).map(([k, v]) => `${SCENE_LABELS[k]} ${v}`);
+  return parts.length ? parts.join("・") : "まだ変更なし";
+}
+function scenesCard() {
+  const rows = S.scenes.map((sc, i) => `
+    <div class="scene-row ${sc.skip ? "skip" : ""}">
+      <i>${i + 1}</i><span><b>${tcAt(sc.start)} – ${tcAt(sc.end)}</b><small>${esc(sceneSummary(sc))}</small></span>
+      <button class="btn sm ghost" data-scene-edit="${i}">編集</button>
+      <button class="btn ghost icon-btn sm" data-scene-del="${i}" title="削除">${I.x}</button></div>`).join("");
+  return `<div class="card scenes-card"><div class="row-between"><b>場面ごとの調整</b>${S.scenes.length ? `<span class="pill sm">${S.scenes.length} 場面</span>` : ""}</div>
+    ${rows ? `<div class="scene-list">${rows}</div>` : `<small class="muted">特定の場面だけ肌の質感や光の合わせ方を変えたり、差し替えをやめたりできます。</small>`}
+    <button class="btn block ghost" id="scene-add">＋ 今の位置から場面を追加</button></div>`;
+}
+function addScene(start, end) {
+  const t = S.target;
+  const len = Math.round((t.fps || 24) * 3);
+  S.scenes.push({ start, end: end ?? Math.min(t.frames - 1, start + len), skip: false, changes: {} });
+  S.editScene = S.scenes.length - 1;
+  renderInspector(); renderTimeline();
+}
+function bindScenes() {
+  const add = $("#scene-add"); if (add) add.onclick = () => addScene(S.frame);
+  $$("[data-scene-edit]").forEach((b) => b.onclick = () => {
+    S.editScene = +b.dataset.sceneEdit; const sc = editing();
+    if (S.frame < sc.start || S.frame > sc.end) setFrame(sc.start);
+    renderInspector(); renderTimeline();
+  });
+  $$("[data-scene-del]").forEach((b) => b.onclick = () => {
+    S.scenes.splice(+b.dataset.sceneDel, 1); S.editScene = null; renderInspector(); renderTimeline(); previewSoon();
+  });
+  $$("[data-issue-fix]").forEach((b) => b.onclick = (e) => {
+    e.stopPropagation(); const x = S.issues[+b.dataset.issueFix]; setFrame(x.frame); addScene(x.start, x.end);
+  });
+}
+function inspScene() {
+  const sc = editing(), i = S.editScene;
+  return {
+    html: `
+      <div class="card scene-edit"><div class="row-between"><b>場面 ${i + 1} を編集中</b><span class="pill sm">${tcAt(sc.start)} – ${tcAt(sc.end)}</span></div>
+        <small class="muted">ここでの変更はこの場面だけに使われます。タイムラインで場面の中に移動するとプレビューで確認できます。</small>
+        <div class="grid2"><button class="btn sm" id="sc-start">開始を今の位置に</button><button class="btn sm" id="sc-end">終了を今の位置に</button></div>
+        <label class="switch"><span class="txt"><b>この場面は差し替えない</b><small>うまくいかない場面を元の映像のままにします</small></span>
+          <input type="checkbox" id="sc-skip" ${sc.skip ? "checked" : ""}><span class="tog"></span></label></div>
+      ${sc.skip ? "" : `
+        ${slider("texture", "肌の質感", 0, 1, 0.05, "なめらか", "元の映像の質感")}
+        ${slider("shading", "光と影を元の映像に合わせる", 0, 1, 0.05, "弱い", "強い")}
+        ${slider("color", "肌の色を周りに合わせる", 0, 1, 0.05, "弱い", "強い")}
+        ${slider("blend", "境目のなじませ", 0.04, 0.3, 0.01, "くっきり", "なめらか")}
+        ${slider("temporal", "ちらつき抑制（動画）", 0, 0.9, 0.05, "くっきり", "ちらつきを抑える")}
+        ${S.look.sharpen ? slider("enhance_blend", "補正の強さ", 0, 1, 0.05, "弱い", "強い") : ""}
+        <small class="muted">色付きのスライダーが、全体の設定から変えた項目です。</small>`}
+      <div class="grid2"><button class="btn" id="sc-reset">変更を取り消す</button><button class="btn primary" id="sc-done">${I.check} 全体の設定に戻る</button></div>
+      <button class="btn block" id="refresh">${I.sparkle} この場面でプレビューを更新</button>`,
+    bind() {
+      bindLookControls();
+      const keep = () => { renderInspector(); renderTimeline(); };
+      $("#sc-start").onclick = () => { sc.start = Math.min(S.frame, sc.end); keep(); };
+      $("#sc-end").onclick = () => { sc.end = Math.max(S.frame, sc.start); keep(); };
+      $("#sc-skip").onchange = (e) => { sc.skip = e.target.checked; keep(); previewSoon(); };
+      $("#sc-reset").onclick = () => { sc.changes = {}; sc.skip = false; keep(); previewSoon(); };
+      $("#sc-done").onclick = () => { S.editScene = null; keep(); };
       $("#refresh").onclick = runPreview;
     },
   };
@@ -556,7 +636,8 @@ function issuesCard() {
   if (list && list.length) {
     body = `<div class="issues">${list.map((x, i) => `
       <button class="issue k-${x.kind}" data-issue="${i}" title="${esc(x.hint)}">
-        <i></i><span><b>${esc(x.label)}</b><small>${tcAt(x.start)} – ${tcAt(x.end)}</small></span>${I.next}</button>`).join("")}</div>
+        <i></i><span><b>${esc(x.label)}</b><small>${tcAt(x.start)} – ${tcAt(x.end)}</small></span>
+        <span class="issue-fix" data-issue-fix="${i}" title="この範囲だけ設定を変える">調整</span></button>`).join("")}</div>
       <small class="muted">クリックするとその場面のプレビューを作ります。</small>`;
   }
   return `<div class="card issues-card"><div class="row-between"><b>苦手な場面チェック</b>
@@ -602,8 +683,12 @@ function bindLookControls() {
     const key = el.dataset.look;
     if (el.type === "checkbox") el.onchange = () => { S.look[key] = el.checked; renderInspector(); previewSoon(); };
     else {
-      el.oninput = () => { S.look[key] = +el.value; $(`#v-${key}`).textContent = el.value; };
-      el.onchange = () => previewSoon();
+      el.oninput = () => {
+        const sc = editing();
+        if (sc && SCENE_KEYS.includes(key)) sc.changes[key] = +el.value; else S.look[key] = +el.value;
+        $(`#v-${key}`).textContent = el.value;
+      };
+      el.onchange = () => { if (editing()) { renderInspector(); renderTimeline(); } previewSoon(); };
     }
   });
 }
@@ -690,7 +775,8 @@ async function loadTarget(promise) {
   const t = await attempt(() => promise);
   S.busy = "";
   if (t) {
-    Object.assign(S, { target: t, frame: 0, faces: [], facesFrame: -1, preview: null, result: null, view: "frame", issues: null });
+    Object.assign(S, { target: t, frame: 0, faces: [], facesFrame: -1, preview: null, result: null, view: "frame", issues: null,
+      scenes: [], editScene: null });
     S.out.in = S.out.outp = null;
     toast(`「${t.name}」を読み込みました`, "ok", 3000);
   }

@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +22,7 @@ from ..safety.provenance import AI_TAG, provenance_record
 from ..safety.watermark import Watermark
 from ..tracking.tracker import FaceTracker, Track, iou
 from ..profiling import NULL, Profiler
-from .frame import FrameProcessor, FrameResult, to_detection_image
+from .frame import FrameProcessor, FrameResult, SceneOverride, scene_at, to_detection_image
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +69,12 @@ class TrackedProcessor:
         options: TrackingOptions | None = None,
         reference_embedding: np.ndarray | None = None,
         cast: Cast | None = None,
+        scenes: list[SceneOverride] | None = None,
     ):
         self.processor = processor
+        self.base_options = processor.options
+        self.scenes = list(scenes or [])
+        self._scene: SceneOverride | None = None
         self.cast = cast
         if cast:
             reference_embedding = cast_reference(cast)
@@ -90,6 +94,8 @@ class TrackedProcessor:
         self._last_full = -(10**9)
         self._windows: dict[int, tuple[int, int, int, int]] = {}  # track id -> sticky crop window
         self.processor.reset_history()
+        self._scene = None
+        self.processor.set_options(self.base_options)
 
     def _window_for(self, track_id: int | None, bbox: np.ndarray, shape) -> tuple[int, int, int, int] | None:
         """Keep the crop still while the face stays comfortably inside it; re-center otherwise."""
@@ -176,7 +182,16 @@ class TrackedProcessor:
             track.is_target = best_similarity(track.embedding, self.reference) >= self.options.reference_threshold
         return track.is_target
 
+    def _enter_scene(self, index: int) -> SceneOverride | None:
+        scene = scene_at(self.scenes, index)
+        if scene is not self._scene:
+            self._scene = scene
+            base = self.base_options
+            self.processor.set_options(replace(base, **scene.changes) if scene is not None else base)
+        return scene
+
     def process(self, frame: np.ndarray, index: int) -> FrameResult:
+        scene = self._enter_scene(index)
         prof = self.profiler
         self.processor.profiler = prof
         with prof("to_8bit"):
@@ -195,6 +210,9 @@ class TrackedProcessor:
             for track in self.tracker.coasting(self.options.coast_frames):
                 if self.options.select == "all" or track.is_target:
                     chosen.append((track, track.face))
+        if scene is not None and scene.skip:  # keep tracking, but leave this range as it is
+            self.processor.reset_history()
+            return FrameResult(frame.copy(), np.zeros(frame.shape[:2], np.float32), [])
         with prof("swap_total"):
             sources = [self.cast[t.cast_index][1] for t, _ in chosen] if self.cast else None
             return self.processor.process(frame, self.source_embedding, faces=[f for _, f in chosen],

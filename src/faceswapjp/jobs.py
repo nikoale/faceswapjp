@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +22,7 @@ from .imageio import SUPPORTED_EXT as IMAGE_EXT
 from .imageio import read_image
 from .media.probe import probe
 from .models.registry import sha256_file
-from .pipeline.frame import FrameOptions, FrameResult, to_detection_image
+from .pipeline.frame import FrameOptions, FrameResult, SceneOverride, scene_at, to_detection_image
 from .pipeline.image import swap_image
 from .pipeline.video import (Cast, RenderResult, RenderSettings, TrackedProcessor, TrackingOptions, cast_member,
                              preview_frame, render_video)
@@ -48,6 +48,7 @@ class SwapJob:
     # Several people at once: (identity id, reference embeddings (N, 512) or photos of the person).
     # When set, each matching person gets their own face and identity_id is only the default.
     cast: list[tuple[str, np.ndarray | list[Path]]] | None = None
+    scenes: list[SceneOverride] = field(default_factory=list)  # per-range look settings (video)
 
     def __post_init__(self):
         if (self.reference_images or self.reference_embeddings is not None or self.cast) \
@@ -62,6 +63,7 @@ class SwapJob:
         return {
             "frame": asdict(self.frame), "tracking": asdict(self.tracking), "render": r,
             "swapper": self.swapper, "masks": self.masks, "enhancer": self.enhancer, "watermark": self.render.watermark is not None,
+            "scenes": [asdict(sc) for sc in self.scenes],
         }
 
 
@@ -171,8 +173,17 @@ def preview(project: Project, job: SwapJob, target: Path, frame_index: int = 0) 
     engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     _, embedding = load_identity(project, job.identity_id)
     _, cast = _load_cast(project, job, engine)
-    processor = engine.frame_processor(job.frame)
+    scene = scene_at(job.scenes, frame_index) if is_video(target) else None
+    options = replace(job.frame, **scene.changes) if scene is not None else job.frame
+    processor = engine.frame_processor(options)
     reference = _reference(engine, job)
+    if scene is not None and scene.skip:
+        info = probe(target)
+        from .media.ffpipe import FrameReader
+
+        original = FrameReader(info, start=frame_index, count=1).read_one()
+        engine.safety.check_frames([(frame_index, to_detection_image(original))], str(target))
+        return original, FrameResult(original.copy(), np.zeros(original.shape[:2], np.float32), [])
     if is_video(target):
         info = probe(target)
         original, result = preview_frame(processor, embedding, info, frame_index, job.tracking.select, reference,
@@ -234,7 +245,7 @@ def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progr
     log.info("NSFW gate: %d frames checked", checked)
     reference = _reference(engine, job)
     tracked = TrackedProcessor(engine.frame_processor(job.frame), embedding, float(info.fps), job.tracking, reference,
-                               cast=cast)
+                               cast=cast, scenes=job.scenes)
     result = render_video(tracked, target, output, job.render,
                           provenance={"models": _models(engine), "identity": identity.id,
                                       "identities": [i.id for i in identities]},

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -36,6 +36,38 @@ class FrameOptions:
     temporal: float = 0.5
     # Transfer the plate's broad light and shadow onto the generated face (0 = off).
     shading: float = 0.5
+
+
+# Settings a scene may change (everything else, e.g. resolution, stays as set for the whole job).
+SCENE_FIELDS = ("texture", "shading", "color_strength", "mask_blur", "temporal", "enhance_blend")
+
+
+@dataclass
+class SceneOverride:
+    """Different look settings, or no swapping at all, for frames start..end (inclusive)."""
+
+    start: int
+    end: int
+    changes: dict = field(default_factory=dict)  # subset of SCENE_FIELDS -> value
+    skip: bool = False  # leave the faces in this range untouched
+
+    def __post_init__(self):
+        unknown = set(self.changes) - set(SCENE_FIELDS)
+        if unknown:
+            raise ValueError(f"scene settings can't change {sorted(unknown)}")
+        if self.end < self.start:
+            raise ValueError("scene end is before its start")
+
+    def applies(self, index: int) -> bool:
+        return self.start <= index <= self.end
+
+
+def scene_at(scenes: list[SceneOverride] | None, index: int) -> SceneOverride | None:
+    """The scene covering a frame; later entries win when ranges overlap."""
+    for scene in reversed(scenes or []):
+        if scene.applies(index):
+            return scene
+    return None
 
 
 @dataclass
@@ -110,6 +142,12 @@ class FrameProcessor:
         if enhancer is not None:
             self._to_enh = crop_to_crop(swapper.template, self.work_size, enhancer.template, enhancer.input_size)
             self._from_enh = cv2.invertAffineTransform(self._to_enh)
+
+    def set_options(self, options: FrameOptions) -> None:
+        """Switch look settings mid-video (scene overrides). Resolution-related settings must not change."""
+        if (options.mask_blur, options.mask_padding) != (self.options.mask_blur, self.options.mask_padding):
+            self._box = box_mask(self.work_size, options.mask_blur, options.mask_padding)
+        self.options = options
 
     def reset_history(self) -> None:
         self._history.clear()

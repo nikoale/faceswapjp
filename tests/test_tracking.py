@@ -198,3 +198,31 @@ def test_multi_person_cast_gives_each_person_their_own_face():
     assert res.frame[100, 80, 2] > 240 and res.frame[100, 80, 0] < 15  # A -> red (face X)
     assert res.frame[100, 240, 0] > 240 and res.frame[100, 240, 2] < 15  # B -> blue (face Y)
     assert (res.frame[100, 400] == 128).all()
+
+
+def test_scene_overrides_switch_settings_and_can_skip(fake_analyzer, solid_swapper):
+    from faceswapjp.pipeline.frame import FrameOptions, FrameProcessor, SceneOverride
+    from faceswapjp.pipeline.video import TrackedProcessor, TrackingOptions
+
+    proc = FrameProcessor(fake_analyzer, solid_swapper, FrameOptions(color_strength=0, texture=0.6))
+    scenes = [SceneOverride(2, 3, skip=True), SceneOverride(4, 5, {"texture": 0.95, "mask_blur": 0.2})]
+    tracked = TrackedProcessor(proc, np.zeros(512, np.float32), 24.0, TrackingOptions(detect_every=1), scenes=scenes)
+    frame = np.full((200, 220, 3), 128, np.uint8)
+    seen = []
+    for i in range(7):
+        res = tracked.process(frame, i)
+        seen.append((len(res.faces), proc.options.texture, proc.options.mask_blur))
+    assert [s[0] for s in seen] == [1, 1, 0, 0, 1, 1, 1]  # 2-3 left untouched
+    assert seen[4][1:] == (0.95, 0.2) and seen[6][1:] == (0.6, 0.12)  # back to the job's settings
+    assert (tracked.process(frame, 2).frame == 128).all()
+
+
+def test_scene_override_rejects_resolution_changes():
+    import pytest
+
+    from faceswapjp.pipeline.frame import SceneOverride
+
+    with pytest.raises(ValueError):
+        SceneOverride(0, 10, {"swap_size": 512})
+    with pytest.raises(ValueError):
+        SceneOverride(10, 5)

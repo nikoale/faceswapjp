@@ -113,6 +113,7 @@ def project_init(
 IdentityOpt = Annotated[str, typer.Option("--identity", help="Identity id (see `identity list`).")]
 SelectOpt = Annotated[str, typer.Option("--select", help="all | largest | reference (set automatically by --only-person)")]
 OnlyPersonOpt = Annotated[Optional[list[Path]], typer.Option("--only-person", help="Image(s) of the person to replace; others are left alone.")]
+SceneOpt = Annotated[Optional[list[str]], typer.Option("--scene", help="Frames START-END with other settings, e.g. 120-240:texture=0.9,shading=0.8 or 300-360:skip (repeatable).")]
 AlsoOpt = Annotated[Optional[list[str]], typer.Option("--also", help="Another person and the face to give them: FACE_ID:photo.jpg[,photo2.jpg] (repeatable; needs --only-person for the main face).")]
 RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count as the --only-person.")]
 MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears), mouth (keep teeth/tongue from the footage).")]
@@ -141,7 +142,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
          fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard", detect_every=3,
-         detail=256, texture=0.6, model=None, shading=0.5, temporal=0.5, also=None):
+         detail=256, texture=0.6, model=None, shading=0.5, temporal=0.5, also=None, scene=None):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -168,7 +169,33 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
         device=device,
         swapper=model or config.DEFAULT_SWAPPER,
         cast=_cast(identity, only_person, also),
+        scenes=_scenes(scene),
     )
+
+
+def _scenes(items):
+    from .pipeline.frame import SCENE_FIELDS, SceneOverride
+
+    alias = {"color": "color_strength", "blend": "mask_blur"}
+    scenes = []
+    for item in items or []:
+        try:
+            rng, _, spec = item.partition(":")
+            a, b = (int(x) for x in rng.split("-"))
+            skip, changes = False, {}
+            for part in filter(None, spec.split(",")):
+                if part.strip() == "skip":
+                    skip = True
+                    continue
+                k, v = part.split("=")
+                k = alias.get(k.strip(), k.strip())
+                if k not in SCENE_FIELDS:
+                    raise ValueError(k)
+                changes[k] = float(v)
+            scenes.append(SceneOverride(a, b, changes, skip))
+        except ValueError:
+            _fail(f"--scene expects START-END:key=value[,...] or START-END:skip, got {item!r}")
+    return scenes
 
 
 def _cast(identity, only_person, also):
@@ -310,6 +337,7 @@ def swap_video_cmd(
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
     also: AlsoOpt = None,
+    scene: SceneOpt = None,
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
@@ -339,7 +367,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
+               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also, scene=scene)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar(), resume=resume))
     if res.resumed_frames:
         typer.echo(f"resumed: {res.resumed_frames} frames were taken over from the interrupted render")
