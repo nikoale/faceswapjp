@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import shutil
 import threading
 import time
 from collections.abc import Callable
@@ -14,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from ..analysis.face import Face, best_similarity
-from ..media.ffpipe import FrameReader, FrameWriter
+from ..media.ffpipe import FrameReader, FrameWriter, concat_segments
 from ..media.presets import get_preset
 from ..media.probe import FFmpegError, VideoInfo, offset_timecode, probe
 from ..safety.provenance import AI_TAG, provenance_record
@@ -221,6 +222,7 @@ class RenderResult:
     info: VideoInfo
     warnings: list[str] = field(default_factory=list)
     timings: dict[str, dict[str, float]] = field(default_factory=dict)
+    resumed_frames: int = 0  # frames taken over from an interrupted render
 
     @property
     def fps(self) -> float:
@@ -248,6 +250,134 @@ def video_warnings(info: VideoInfo) -> list[str]:
     return warnings
 
 
+SEGMENT_SECONDS = 10.0
+
+
+def segment_dir(output: Path) -> Path:
+    """Where a resumable render keeps its finished segments (removed once the output is complete)."""
+    return output.with_name(f".{output.name}.parts")
+
+
+class _DirectSink:
+    """Encode straight into the final files (one pass, not resumable)."""
+
+    resumed_frames = 0
+    resumed_with_faces = 0
+
+    def __init__(self, main: FrameWriter, matte: FrameWriter | None):
+        self.main, self.matte = main, matte
+
+    def open(self) -> None:
+        self.main.__enter__()
+        if self.matte:
+            self.matte.__enter__()
+
+    def write(self, frame: np.ndarray, matte: np.ndarray | None, has_face: bool) -> None:
+        self.main.write(frame)
+        if self.matte is not None and matte is not None:
+            self.matte.write(matte)
+
+    def abort(self, exc: BaseException) -> None:
+        if self.matte:
+            self.matte.__exit__(type(exc), exc, None)
+        self.main.__exit__(type(exc), exc, None)
+
+    def finish(self, *_args) -> None:
+        if self.matte:
+            self.matte.__exit__(None, None, None)
+        self.main.__exit__(None, None, None)
+
+
+class _SegmentSink:
+    """Encode into numbered segments; finished ones are recorded in state.json and survive a crash,
+    cancel or sleep. finish() joins them (stream copy) and adds audio, timecode and metadata."""
+
+    def __init__(self, parts: Path, key: str, seg_frames: int, make_writers):
+        self.parts, self.key, self.seg_frames, self.make_writers = parts, key, seg_frames, make_writers
+        self.state = self._load()
+        self.cur: tuple[FrameWriter, FrameWriter | None] | None = None
+        self.n = self.faces = 0
+
+    def _load(self) -> dict:
+        try:
+            state = json.loads((self.parts / "state.json").read_text(encoding="utf-8"))
+            if state.get("key") == self.key and state.get("seg_frames") == self.seg_frames:
+                ok = all((self.parts / f"v{i:05d}.mov").is_file() for i in range(len(state["segments"])))
+                if ok:
+                    return state
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        shutil.rmtree(self.parts, ignore_errors=True)
+        return {"key": self.key, "seg_frames": self.seg_frames, "segments": []}
+
+    @property
+    def resumed_frames(self) -> int:
+        return sum(seg["frames"] for seg in self.state["segments"])
+
+    @property
+    def resumed_with_faces(self) -> int:
+        return sum(seg["with_faces"] for seg in self.state["segments"])
+
+    def _save(self) -> None:
+        tmp = self.parts / "state.json.tmp"
+        tmp.write_text(json.dumps(self.state), encoding="utf-8")
+        tmp.replace(self.parts / "state.json")
+
+    def open(self) -> None:
+        self.parts.mkdir(parents=True, exist_ok=True)
+        self._save()
+
+    def write(self, frame: np.ndarray, matte: np.ndarray | None, has_face: bool) -> None:
+        if self.cur is None:
+            v, m = self.make_writers(len(self.state["segments"]), self.parts)
+            v.__enter__()
+            if m:
+                m.__enter__()
+            self.cur, self.n, self.faces = (v, m), 0, 0
+        v, m = self.cur
+        v.write(frame)
+        if m is not None and matte is not None:
+            m.write(matte)
+        self.n += 1
+        self.faces += int(has_face)
+        if self.n >= self.seg_frames:
+            self._close()
+
+    def _close(self) -> None:
+        v, m = self.cur
+        self.cur = None
+        v.__exit__(None, None, None)
+        if m:
+            m.__exit__(None, None, None)
+        self.state["segments"].append({"frames": self.n, "with_faces": self.faces})
+        self._save()
+
+    def abort(self, exc: BaseException) -> None:
+        """Drop the unfinished segment; finished ones stay for the next attempt."""
+        if self.cur is not None:
+            v, m = self.cur
+            self.cur = None
+            for w in (m, v):
+                if w is not None:
+                    try:
+                        w.__exit__(type(exc), exc, None)
+                    except Exception:  # noqa: BLE001 - already failing
+                        pass
+                    w.output.unlink(missing_ok=True)
+
+    def finish(self, output: Path, matte_out: Path | None, info: VideoInfo, preset, matte_preset, tc, source,
+               audio_start: float, audio_duration: float | None, meta: dict[str, str]) -> None:
+        if self.cur is not None:
+            self._close()
+        n = len(self.state["segments"])
+        concat_segments([self.parts / f"v{i:05d}.mov" for i in range(n)], output, info, preset, tc,
+                        audio_source=source, audio_start=audio_start, audio_duration=audio_duration, metadata=meta)
+        if matte_out is not None:
+            concat_segments([self.parts / f"m{i:05d}.mov" for i in range(n)], matte_out, info, matte_preset, tc,
+                            metadata=meta)
+        shutil.rmtree(self.parts, ignore_errors=True)
+
+
 def render_video(
     tracked: TrackedProcessor,
     source: Path,
@@ -258,8 +388,14 @@ def render_video(
     cancel: threading.Event | None = None,
     info: VideoInfo | None = None,
     on_frame: Callable[[int, np.ndarray], None] | None = None,
+    resume_key: str | None = None,
+    on_resume: Callable[[int, int], None] | None = None,
 ) -> RenderResult:
-    """on_frame(index, frame) receives each finished frame (e.g. for a live preview); keep it cheap."""
+    """on_frame(index, frame) receives each finished frame (e.g. for a live preview); keep it cheap.
+
+    resume_key: render in ~10 s segments next to the output and keep finished ones, so an
+    interrupted render with the same key (same source and settings) continues where it stopped.
+    on_resume(frames_already_done, total) is called when that happens."""
     info = info or probe(source)
     preset = get_preset(settings.format)
     if Path(output).suffix.lower() != preset.ext:
@@ -282,33 +418,52 @@ def render_video(
     record = provenance_record(**(provenance or {}), source=str(source), frame_range=[start, end])
     meta = {"comment": AI_TAG, "description": AI_TAG, "faceswapjp": json.dumps(record, ensure_ascii=False)}
 
-    reader = FrameReader(info, start=start, count=count)
-    pix = "bgr48le" if reader.depth == 16 else "bgr24"
+    probe_depth = FrameReader(info, start=start, count=count).depth
+    pix = "bgr48le" if probe_depth == 16 else "bgr24"
     partial = start > 0 or end < info.nb_frames
-    main = FrameWriter(
-        output, info, preset, pix, encoder=settings.encoder, quality=settings.quality, timecode=tc, audio_source=source,
-        audio_start=float(start / fps) if partial else 0.0,
-        audio_duration=float(count / fps) if partial else None,
-        metadata=meta,
-    )
+    audio_start = float(start / fps) if partial else 0.0
+    audio_duration = float(count / fps) if partial else None
     matte_out = None
-    matte_writer = None
+    matte_preset = None
     if settings.matte:
         if settings.matte not in ("luma", "alpha"):
             raise ValueError("matte must be 'luma' or 'alpha'")
         matte_out = matte_path(Path(output))
-        if settings.matte == "luma":
-            matte_writer = FrameWriter(matte_out, info, get_preset("prores422hq"), "gray16le", timecode=tc,
-                                       metadata=meta, full_range_out=False)
-        else:
-            matte_writer = FrameWriter(matte_out, info, get_preset("prores4444_alpha"), "bgra64le", timecode=tc,
-                                       metadata=meta)
+        matte_preset = get_preset("prores422hq" if settings.matte == "luma" else "prores4444_alpha")
+    matte_pix = "gray16le" if settings.matte == "luma" else "bgra64le"
+    matte_range = False if settings.matte == "luma" else None
 
+    if resume_key is None:
+        main = FrameWriter(output, info, preset, pix, encoder=settings.encoder, quality=settings.quality, timecode=tc,
+                           audio_source=source, audio_start=audio_start, audio_duration=audio_duration,
+                           metadata=meta)
+        matte_writer = (FrameWriter(matte_out, info, matte_preset, matte_pix, timecode=tc, metadata=meta,
+                                    full_range_out=matte_range) if settings.matte else None)
+        sink: _DirectSink | _SegmentSink = _DirectSink(main, matte_writer)
+    else:
+        def make_writers(index: int, parts: Path):
+            v = FrameWriter(parts / f"v{index:05d}.mov", info, preset, pix, encoder=settings.encoder,
+                            quality=settings.quality)
+            m = (FrameWriter(parts / f"m{index:05d}.mov", info, matte_preset, matte_pix, full_range_out=matte_range)
+                 if settings.matte else None)
+            return v, m
+
+        seg_frames = max(1, int(round(float(fps) * SEGMENT_SECONDS)))
+        key = f"{resume_key}|{settings.format}|{settings.encoder}|{settings.quality}|{settings.matte}|{start}|{end}"
+        sink = _SegmentSink(segment_dir(Path(output)), key, seg_frames, make_writers)
+
+    resumed = sink.resumed_frames
+    if resumed:
+        log.info("resuming %s at frame %d of %d", output, resumed, count)
+        if on_resume is not None:
+            on_resume(resumed, count)
     tracked.reset()
     prof = Profiler()
     tracked.profiler = prof
     t0 = time.time()
-    done = with_faces = 0
+    done, with_faces = resumed, sink.resumed_with_faces
+    remaining = count - resumed
+    reader = FrameReader(info, start=start + resumed, count=remaining) if remaining > 0 else None
 
     # Encoding runs on its own thread so ffmpeg I/O overlaps with inference.
     out_q: queue.Queue = queue.Queue(maxsize=6)
@@ -317,10 +472,7 @@ def render_video(
     def writer_loop() -> None:
         try:
             while (item := out_q.get()) is not None:
-                frame_out, matte_frame = item
-                main.write(frame_out)
-                if matte_writer is not None and matte_frame is not None:
-                    matte_writer.write(matte_frame)
+                sink.write(*item)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
             writer_error.append(exc)
             while out_q.get() is not None:  # keep draining so the producer never blocks
@@ -338,59 +490,56 @@ def render_video(
                 continue
         prof.add("wait_encoder", time.perf_counter() - t_put)
 
-    with main:
-        if matte_writer:
-            matte_writer.__enter__()
-        writer = threading.Thread(target=writer_loop, name="fsj-encode", daemon=True)
-        writer.start()
-        try:
-            frames = iter(reader)
-            i = 0
-            while True:
-                t_read = time.perf_counter()
-                frame = next(frames, None)
-                prof.add("wait_decoder", time.perf_counter() - t_read)
-                if frame is None:
-                    break
-                if cancel is not None and cancel.is_set():
-                    raise InterruptedError("render cancelled")
-                result = tracked.process(frame, start + i)
-                if result.faces:
-                    with_faces += 1
-                out = result.frame
-                matte_frame = None
-                if matte_writer:
-                    with prof("matte"):
-                        matte16 = np.clip(np.rint(result.matte * 65535), 0, 65535).astype(np.uint16)
-                        if settings.matte == "luma":
-                            matte_frame = matte16
-                        else:
-                            fill = out.astype(np.uint16) * 257 if out.dtype == np.uint8 else out
-                            matte_frame = np.dstack([fill, matte16])
-                if settings.watermark is not None:
-                    out = settings.watermark.apply(out)
-                if on_frame is not None:
-                    on_frame(start + i, out)
-                enqueue((out, matte_frame))
-                done += 1
-                i += 1
-                if progress:
-                    progress(done, count)
-            out_q.put(None)
-            writer.join()
-            if writer_error:
-                raise writer_error[0]
-        except BaseException as exc:
-            if writer.is_alive():
-                try:
-                    out_q.put_nowait(None)
-                except queue.Full:
-                    pass
-            if matte_writer:
-                matte_writer.__exit__(type(exc), exc, None)
-            raise
-        if matte_writer:
-            matte_writer.__exit__(None, None, None)
+    sink.open()
+    writer = threading.Thread(target=writer_loop, name="fsj-encode", daemon=True)
+    writer.start()
+    try:
+        frames = iter(reader) if reader is not None else iter(())
+        i = resumed
+        while True:
+            t_read = time.perf_counter()
+            frame = next(frames, None)
+            prof.add("wait_decoder", time.perf_counter() - t_read)
+            if frame is None:
+                break
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("render cancelled")
+            result = tracked.process(frame, start + i)
+            if result.faces:
+                with_faces += 1
+            out = result.frame
+            matte_frame = None
+            if settings.matte:
+                with prof("matte"):
+                    matte16 = np.clip(np.rint(result.matte * 65535), 0, 65535).astype(np.uint16)
+                    if settings.matte == "luma":
+                        matte_frame = matte16
+                    else:
+                        fill = out.astype(np.uint16) * 257 if out.dtype == np.uint8 else out
+                        matte_frame = np.dstack([fill, matte16])
+            if settings.watermark is not None:
+                out = settings.watermark.apply(out)
+            if on_frame is not None:
+                on_frame(start + i, out)
+            enqueue((out, matte_frame, bool(result.faces)))
+            done += 1
+            i += 1
+            if progress:
+                progress(done, count)
+        out_q.put(None)
+        writer.join()
+        if writer_error:
+            raise writer_error[0]
+    except BaseException as exc:
+        if writer.is_alive():
+            try:
+                out_q.put_nowait(None)
+            except queue.Full:
+                pass
+            writer.join(5)
+        sink.abort(exc)
+        raise
+    sink.finish(output, matte_out, info, preset, matte_preset, tc, source, audio_start, audio_duration, meta)
 
     if done != count:
         warnings.append(f"decoded {done} frames, expected {count}")
@@ -400,7 +549,7 @@ def render_video(
     for w in warnings[len(video_warnings(info)):]:
         log.warning(w)
     return RenderResult(Path(output), matte_out, done, with_faces, time.time() - t0, info, warnings,
-                        prof.report(done))
+                        prof.report(max(1, done - resumed)), resumed_frames=resumed)
 
 
 def preview_frame(

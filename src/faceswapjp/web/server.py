@@ -94,6 +94,7 @@ class Job:
     message: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     cancel: threading.Event = field(default_factory=threading.Event)
+    base_done: int = 0  # progress taken over from an earlier attempt (not counted in the speed)
     live: bytes | None = None  # latest rendered frame (JPEG) for the live view
     live_version: int = 0
     live_frame: int = 0
@@ -110,7 +111,7 @@ class Job:
 
     def public(self) -> dict[str, Any]:
         elapsed = time.time() - self.started if self.started else 0.0
-        rate = self.done / elapsed if elapsed > 0 and self.done else 0.0
+        rate = (self.done - self.base_done) / elapsed if elapsed > 0 and self.done > self.base_done else 0.0
         eta = (self.total - self.done) / rate if rate > 0 and self.total else None
         return {"id": self.id, "kind": self.kind, "title": self.title, "status": self.status, "done": self.done,
                 "total": self.total, "fps": round(rate, 2), "eta": eta, "elapsed": elapsed,
@@ -591,12 +592,18 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
                 job.message = "安全チェック中…"
 
                 def progress(d, total):
-                    job.done, job.total, job.message = d, total, "処理中…"
+                    job.done, job.total = d, total
+                    job.message = "前回の続きから書き出しています…" if job.base_done else "処理中…"
+
+                def resumed(d, total):
+                    job.base_done, job.done, job.total = d, d, total
+                    job.message = f"前回の続きから書き出します（{d * 100 // max(1, total)}% 済み）"
 
                 res = swap_video(project, job_spec, t.path, out, progress=progress, cancel=job.cancel,
-                                 on_frame=job.offer_frame)
+                                 on_frame=job.offer_frame, on_resume=resumed)
                 return {"output": str(out), "matte": str(res.matte_output) if res.matte_output else None,
                         "frames": res.frames, "seconds": res.seconds, "warnings": res.warnings,
+                        "resumed": res.resumed_frames,
                         "playable": out.suffix == ".mp4", "url": f"/api/file?path={out}"}
             job.total = 1
             matte = out.with_name(f"{out.stem}_matte.png") if job_spec.render.matte else None

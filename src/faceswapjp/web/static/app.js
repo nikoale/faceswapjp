@@ -753,9 +753,11 @@ async function startRender() {
   S.job = r; S.result = null;
   renderAll();
   pollJob(r.id, (job) => {
-    if (job.status === "done") { S.result = job.result; toast("書き出しが終わりました", "ok"); }
+    if (job.status === "done") { S.result = job.result; toast(job.result.resumed ? "書き出しが終わりました（前回の続きから再開）" : "書き出しが終わりました", "ok"); }
     else if (job.status === "error") toast(job.message, "err", 10000);
-    else if (job.status === "cancelled") toast("書き出しを中止しました", "info");
+    else if (job.status === "cancelled") toast(S.target?.kind === "video"
+      ? "書き出しを中止しました。途中までの分は保存してあるので、同じ設定でもう一度書き出すと続きから再開します。"
+      : "書き出しを中止しました", "info", 9000);
   });
 }
 function pollJob(id, onEnd) {

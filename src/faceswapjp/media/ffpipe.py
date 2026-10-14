@@ -122,6 +122,59 @@ class FrameReader:
         raise FFmpegError(f"could not read frame {self.start} of {self.info.path}")
 
 
+def audio_args(info: VideoInfo, preset: Preset, source: Path | None, start: float = 0.0,
+               duration: float | None = None) -> tuple[list[str], list[str]]:
+    """(input args, codec args) to mux the source's audio as input #1; both empty without audio."""
+    if source is None or not info.has_audio:
+        return [], []
+    inp = []
+    if info.video_start:
+        inp += ["-itsoffset", f"{-info.video_start:.6f}"]
+    if start:
+        inp += ["-ss", f"{start:.6f}"]
+    if duration is not None:
+        inp += ["-t", f"{duration:.6f}"]
+    inp += ["-i", str(source)]
+    partial = start > 0 or duration is not None
+    if not partial and all(c in preset.audio_copy for c in info.audio_codecs):
+        return inp, ["-c:a", "copy"]
+    return inp, list(preset.audio_fallback)
+
+
+def _container_args(output: Path, timecode: str | None, metadata: dict[str, str]) -> list[str]:
+    args = []
+    if timecode:
+        args += ["-timecode", timecode]
+    for key, value in metadata.items():
+        args += ["-metadata", f"{key}={value}"]
+    suffix = Path(output).suffix.lower()
+    if suffix in (".mov", ".mp4", ".m4v"):
+        args += ["-movflags", "+use_metadata_tags" + ("+faststart" if suffix == ".mp4" else "")]
+    return args
+
+
+def concat_segments(segments: list[Path], output: Path, info: VideoInfo, preset: Preset, timecode: str | None = None,
+                    audio_source: Path | None = None, audio_start: float = 0.0, audio_duration: float | None = None,
+                    metadata: dict[str, str] | None = None) -> None:
+    """Join encoded segments without re-encoding, adding audio, timecode and metadata (resumable renders)."""
+    output = Path(output)
+    listing = output.with_name(f".{output.name}.concat.txt")
+    listing.write_text("".join(f"file '{Path(s).resolve().as_posix()}'\n" for s in segments), encoding="utf-8")
+    try:
+        cmd = [ffmpeg_bin(), "-nostdin", "-hide_banner", "-v", "error", "-y",
+               "-f", "concat", "-safe", "0", "-i", str(listing)]
+        audio_in, audio_codec = audio_args(info, preset, audio_source, audio_start, audio_duration)
+        cmd += audio_in + ["-map", "0:v:0"] + (["-map", "1:a?"] if audio_in else [])
+        cmd += ["-c:v", "copy"] + audio_codec
+        cmd += _container_args(output, timecode, metadata or {})
+        cmd += [str(output)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise FFmpegError(f"joining segments failed: {res.stderr.strip()[-800:]}")
+    finally:
+        listing.unlink(missing_ok=True)
+
+
 class FrameWriter:
     """Encode raw frames, muxing audio/timecode/color tags/metadata from the source."""
 
@@ -163,16 +216,9 @@ class FrameWriter:
         cmd = [ffmpeg_bin(), "-nostdin", "-hide_banner", "-v", "error", "-y"]
         cmd += ["-f", "rawvideo", "-pix_fmt", self.input_pix_fmt, "-s", f"{info.width}x{info.height}"]
         cmd += ["-framerate", f"{info.fps.numerator}/{info.fps.denominator}", "-i", "-"]
-        audio = self.audio_source is not None and info.has_audio
-        partial = self.audio_start > 0 or self.audio_duration is not None
-        if audio:
-            if info.video_start:
-                cmd += ["-itsoffset", f"{-info.video_start:.6f}"]
-            if self.audio_start:
-                cmd += ["-ss", f"{self.audio_start:.6f}"]
-            if self.audio_duration is not None:
-                cmd += ["-t", f"{self.audio_duration:.6f}"]
-            cmd += ["-i", str(self.audio_source)]
+        audio_in, audio_codec = audio_args(info, preset, self.audio_source, self.audio_start, self.audio_duration)
+        audio = bool(audio_in)
+        cmd += audio_in
         cmd += ["-map", "0:v:0"]
         if audio:
             cmd += ["-map", "1:a?"]
@@ -189,17 +235,8 @@ class FrameWriter:
             cmd += ["-color_trc", info.color_trc]
         if info.sar and info.sar not in ("0:1", "1:1"):
             cmd += ["-aspect", f"{Fraction(info.width, info.height) * Fraction(info.sar.replace(':', '/'))}"]
-        if audio:
-            if not partial and all(c in preset.audio_copy for c in info.audio_codecs):
-                cmd += ["-c:a", "copy"]
-            else:
-                cmd += list(preset.audio_fallback)
-        if self.timecode:
-            cmd += ["-timecode", self.timecode]
-        for key, value in self.metadata.items():
-            cmd += ["-metadata", f"{key}={value}"]
-        if self.output.suffix.lower() in (".mov", ".mp4", ".m4v"):
-            cmd += ["-movflags", "+use_metadata_tags" + ("+faststart" if self.output.suffix.lower() == ".mp4" else "")]
+        cmd += audio_codec
+        cmd += _container_args(self.output, self.timecode, self.metadata)
         cmd += [str(self.output)]
         return cmd
 

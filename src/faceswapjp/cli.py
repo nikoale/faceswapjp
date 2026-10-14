@@ -323,6 +323,7 @@ def swap_video_cmd(
     color_strength: ColorOpt = 0.5,
     smoothing: SmoothingOpt = 0.5,
     detect_every: Annotated[int, typer.Option(help="Full face detection every N frames (1 = every frame, slower).")] = 3,
+    resume: Annotated[bool, typer.Option("--resume/--no-resume", help="Keep finished 10 s segments so an interrupted render continues when run again.")] = True,
     watermark: WatermarkOpt = False,
     watermark_text: WatermarkTextOpt = "AI face-swapped",
     watermark_position: WatermarkPosOpt = "bottom-right",
@@ -339,7 +340,9 @@ def swap_video_cmd(
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
                fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
-    res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
+    res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar(), resume=resume))
+    if res.resumed_frames:
+        typer.echo(f"resumed: {res.resumed_frames} frames were taken over from the interrupted render")
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
     fps = res.frames / res.seconds if res.seconds else 0

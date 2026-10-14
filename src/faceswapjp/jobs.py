@@ -204,8 +204,27 @@ def find_faces(project: Project | None, target: Path, frame_index: int = 0, devi
     return frame, faces
 
 
+def resume_key(job: SwapJob, target: Path, identities: list[Identity], cast) -> str:
+    """Identifies "the same render": same source file, faces, people and settings."""
+    import hashlib
+
+    st = Path(target).stat()
+    h = hashlib.sha1()
+    h.update(json.dumps([str(Path(target).resolve()), st.st_size, int(st.st_mtime), job.settings_record(),
+                         [i.id for i in identities], job.swapper, job.masks, job.enhancer],
+                        sort_keys=True, default=str).encode())
+    for arr in ([job.reference_embeddings] if job.reference_embeddings is not None else []) + \
+            [refs for refs, _ in (cast or [])]:
+        h.update(np.ascontiguousarray(np.asarray(arr, np.float32)).tobytes())
+    for p in job.reference_images:
+        h.update(str(Path(p).resolve()).encode())
+    return h.hexdigest()
+
+
 def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progress=None,
-               cancel: threading.Event | None = None, on_frame=None) -> RenderResult:
+               cancel: threading.Event | None = None, on_frame=None, resume: bool = True,
+               on_resume=None) -> RenderResult:
+    """resume: keep finished ~10 s segments so an interrupted render continues when run again."""
     engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     identity, embedding = load_identity(project, job.identity_id)
     identities, cast = _load_cast(project, job, engine)
@@ -219,7 +238,9 @@ def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progr
     result = render_video(tracked, target, output, job.render,
                           provenance={"models": _models(engine), "identity": identity.id,
                                       "identities": [i.id for i in identities]},
-                          progress=progress, cancel=cancel, info=info, on_frame=on_frame)
+                          progress=progress, cancel=cancel, info=info, on_frame=on_frame,
+                          resume_key=resume_key(job, target, identities, cast) if resume else None,
+                          on_resume=on_resume)
     for ident in identities:
         _log_render(project, "video", ident, engine, job, target, output, result.matte_output,
                     frames=result.frames, frames_with_faces=result.frames_with_faces, warnings=result.warnings,

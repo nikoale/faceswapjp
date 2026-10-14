@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 from fractions import Fraction
@@ -173,3 +174,60 @@ def test_choose_encoder_modes(monkeypatch):
         presets.choose_encoder(presets.get_preset("h265"), "hardware")
     with pytest.raises(ValueError):
         presets.choose_encoder(h264, "prores_ks")
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("fmt", ["prores422hq", "h264"])
+def test_resumable_render_continues_after_interruption(tmp_path, fake_analyzer, solid_swapper, monkeypatch, fmt):
+    import faceswapjp.pipeline.video as video
+    import threading
+
+    monkeypatch.setattr(video, "SEGMENT_SECONDS", 0.25)  # 6 frames per segment at 23.976 fps
+    src = _make_clip(tmp_path / "src.mov", frames=24)
+    ext = ".mov" if fmt.startswith("prores") else ".mp4"
+    out = tmp_path / f"out{ext}"
+    settings = RenderSettings(format=fmt, matte="luma", start=2, end=22)  # 20 frames, partial range
+    proc = FrameProcessor(fake_analyzer, solid_swapper)
+
+    stop = threading.Event()
+    def progress(done, total):
+        if done == 15:
+            stop.set()  # interrupt in the middle of the third segment
+    with pytest.raises(InterruptedError):
+        render_video(TrackedProcessor(proc, np.zeros(512, np.float32), 24.0), src, out, settings,
+                     progress=progress, cancel=stop, resume_key="k1")
+    parts = video.segment_dir(out)
+    assert not out.exists() and (parts / "state.json").exists()
+    assert sorted(p.name for p in parts.glob("v*.mov")) == ["v00000.mov", "v00001.mov"]  # 12 frames kept
+
+    seen = []
+    res = render_video(TrackedProcessor(proc, np.zeros(512, np.float32), 24.0), src, out, settings,
+                       resume_key="k1", on_resume=lambda d, t: seen.append((d, t)))
+    assert seen == [(12, 20)] and res.resumed_frames == 12 and res.frames == 20 and not res.warnings
+    assert not parts.exists()
+    info, ref = probe(out), probe(src)
+    assert info.nb_frames == 20 and info.fps == ref.fps
+    assert info.timecode == offset_timecode(ref.timecode, ref.fps, 2)
+    assert info.has_audio and abs(info.duration - 20 / float(ref.fps)) < 0.06
+    tags = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=comment", "-of", "csv=p=0",
+                           str(out)], capture_output=True, text=True).stdout
+    assert "AI face-swapped" in tags
+    m = probe(res.matte_output)
+    assert m.nb_frames == 20 and m.timecode == info.timecode
+
+
+@needs_ffmpeg
+def test_resumable_render_restarts_when_settings_change(tmp_path, fake_analyzer, solid_swapper, monkeypatch):
+    import faceswapjp.pipeline.video as video
+
+    monkeypatch.setattr(video, "SEGMENT_SECONDS", 0.25)
+    src = _make_clip(tmp_path / "src.mov", frames=12, audio=False)
+    out = tmp_path / "out.mov"
+    parts = video.segment_dir(out)
+    parts.mkdir()
+    (parts / "state.json").write_text(json.dumps({"key": "old", "seg_frames": 6,
+                                                  "segments": [{"frames": 6, "with_faces": 6}]}))
+    (parts / "v00000.mov").write_bytes(b"stale")
+    res = render_video(TrackedProcessor(FrameProcessor(fake_analyzer, solid_swapper), np.zeros(512, np.float32), 24.0),
+                       src, out, RenderSettings(format="prores422hq"), resume_key="new")
+    assert res.resumed_frames == 0 and probe(out).nb_frames == 12
