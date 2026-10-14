@@ -29,6 +29,7 @@ class Track:
     misses: int = 0
     first_frame: int = 0
     is_target: bool | None = None
+    cast_index: int | None = None  # which person of a multi-person cast this track is
     history: list[int] = field(default_factory=list)
 
     @property

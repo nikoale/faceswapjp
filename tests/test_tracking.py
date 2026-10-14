@@ -155,3 +155,46 @@ def test_detect_every_one_is_full_detection(solid_swapper):
     for i in range(4):
         tracked.process(np.zeros((160, 200, 3), np.uint8), i)
     assert A.full == 4
+
+
+def test_multi_person_cast_gives_each_person_their_own_face():
+    from faceswapjp.analysis.face import Face
+    from faceswapjp.compositing.align import template_points
+    from faceswapjp.pipeline.frame import FrameOptions, FrameProcessor
+    from faceswapjp.pipeline.video import TrackedProcessor, TrackingOptions
+
+    eye = np.eye(512, dtype=np.float32)
+    person_a, person_b, stranger = eye[0], eye[1], eye[2]
+
+    class TwoPeople:
+        def embed(self, image, face):
+            return face.embedding
+
+        def detect(self, image, with_embedding=True):
+            out = []
+            for cx, emb in ((80, person_a), (240, person_b), (400, stranger)):
+                kps = (template_points("arcface_128", 128) - 64) + np.array([cx, 100], np.float32)
+                x0, y0 = kps.min(0) - 20
+                x1, y1 = kps.max(0) + 20
+                out.append(Face(np.array([x0, y0, x1, y1], np.float32), kps.astype(np.float32), 0.9, emb))
+            return out
+
+    class ColorBySource:  # paints the face red for source X, blue for source Y
+        name, template, input_size = "color", "arcface_128", 128
+
+        def swap(self, aligned, embedding):
+            bgr = (0, 0, 1) if embedding[10] > 0.5 else (1, 0, 0)
+            return np.broadcast_to(np.array(bgr, np.float32), aligned.shape).copy()
+
+    face_x, face_y = eye[10], eye[11]
+    proc = FrameProcessor(TwoPeople(), ColorBySource(),
+                          FrameOptions(color_strength=0, shading=0, texture=0, temporal=0))
+    tracked = TrackedProcessor(proc, face_x, 24.0, TrackingOptions(select="reference", detect_every=1),
+                               cast=[(person_a[None], face_x), (person_b[None], face_y)])
+    frame = np.full((220, 480, 3), 128, np.uint8)
+    for i in range(4):
+        res = tracked.process(frame, i)
+    assert len(res.faces) == 2  # the stranger is left alone
+    assert res.frame[100, 80, 2] > 240 and res.frame[100, 80, 0] < 15  # A -> red (face X)
+    assert res.frame[100, 240, 0] > 240 and res.frame[100, 240, 2] < 15  # B -> blue (face Y)
+    assert (res.frame[100, 400] == 128).all()

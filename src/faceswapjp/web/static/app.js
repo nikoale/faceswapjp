@@ -133,7 +133,7 @@ const stepDone = [
 function payload(extra = {}) {
   return {
     project: S.project, identity: S.identity, target: S.target?.id, frame: S.frame,
-    who: S.who, picked: S.picked.map((p) => p.emb), ...S.look,
+    who: S.who, picked: S.picked.map((p) => p.emb), picked_ids: S.picked.map((p) => p.identity || null), ...S.look,
     codec: S.out.codec, quality: S.out.quality, encoder: S.out.encoder, matte: S.out.matte || null,
     watermark: S.out.watermark, in_frame: S.out.in ?? 0, out_frame: S.out.outp, output: S.out.path || null, ...extra,
   };
@@ -475,15 +475,28 @@ function inspWho() {
       <div class="section"><div class="label">この場面の顔</div>${facesHtml}
         <div class="hint">プレビュー上の顔をクリックしても選べます。タイムラインで場面を動かすと、その場面の顔を探し直します。</div></div>
       ${S.who === "pick" ? `<div class="section"><div class="label">置き換える人（${S.picked.length} 人）</div>
-        ${S.picked.length ? `<div class="people">${S.picked.map((p, i) => `<button class="person on" data-unpick="${i}" title="クリックで外す"><img src="${p.crop}" alt=""><span>外す</span></button>`).join("")}</div>`
+        ${S.picked.length ? `<div class="cast">${S.picked.map((p, i) => castRow(p, i)).join("")}</div>`
           : `<div class="hint">まだ選ばれていません。</div>`}
-        <div class="hint">選んだ人は、動画全体で自動的に追いかけます。</div></div>` : ""}`,
+        <div class="hint">選んだ人は、動画全体で自動的に追いかけます。${S.identities.length > 1 ? "人ごとに別の顔を割り当てられます。" : "顔を複数登録すると、人ごとに別の顔を割り当てられます。"}</div></div>` : ""}`,
     bind() {
       $$("[data-who]").forEach((b) => b.onclick = () => { S.who = b.dataset.who; S.preview = null; renderAll(); });
       $$(".person[data-face]").forEach((b) => b.onclick = () => toggleFace(+b.dataset.face));
       $$("[data-unpick]").forEach((b) => b.onclick = () => { S.picked.splice(+b.dataset.unpick, 1); S.preview = null; renderAll(); });
+      $$("[data-cast]").forEach((el) => el.onchange = () => { S.picked[+el.dataset.cast].identity = el.value || null; S.preview = null; renderAll(); });
     },
   };
+}
+
+function castRow(p, i) {
+  const main = S.identities.find((x) => x.id === S.identity);
+  const opts = S.identities.map((x) => `<option value="${x.id === S.identity ? "" : esc(x.id)}" ${(p.identity || "") === (x.id === S.identity ? "" : x.id) ? "selected" : ""}>${esc(x.label)}${x.id === S.identity ? "（使う顔）" : ""}</option>`).join("");
+  const face = S.identities.find((x) => x.id === (p.identity || S.identity));
+  return `<div class="cast-row">
+    <img src="${p.crop}" alt="" class="cast-from"><span class="cast-arrow">→</span>
+    ${face ? `<img src="${withToken(face.thumb)}" alt="" class="cast-to">` : ""}
+    ${S.identities.length > 1 ? `<div class="select-wrap sm"><select data-cast="${i}" aria-label="${i + 1} 人目に使う顔">${opts}</select></div>`
+      : `<span class="cast-name">${esc(main?.label || "")}</span>`}
+    <button class="btn ghost icon-btn sm" data-unpick="${i}" title="外す">${I.x}</button></div>`;
 }
 
 function slider(key, label, min, max, step, left, right) {

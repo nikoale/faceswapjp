@@ -188,14 +188,17 @@ class FrameProcessor:
         source_embedding: np.ndarray,
         faces: list[Face] | None = None,
         keys: list | None = None,
+        sources: list[np.ndarray] | None = None,
     ) -> FrameResult:
-        """keys: one stable id per face (video track ids) to enable temporal smoothing."""
+        """keys: one stable id per face (video track ids) to enable temporal smoothing.
+        sources: one source embedding per face (multi-person casts); default source_embedding for all."""
         out = frame.copy()
         matte = np.zeros(frame.shape[:2], dtype=np.float32)
         if faces is None:
             faces = select_faces(self.detect(frame), self.options.faces, self.options.min_det_score)
         for i, face in enumerate(faces):
-            self.swap_face(out, face, source_embedding, matte, keys[i] if keys is not None else None)
+            src = sources[i] if sources is not None else source_embedding
+            self.swap_face(out, face, src, matte, keys[i] if keys is not None else None)
         if keys is not None:  # forget faces that are no longer being replaced
             for k in set(self._history) - set(keys):
                 del self._history[k]

@@ -24,7 +24,8 @@ from .media.probe import probe
 from .models.registry import sha256_file
 from .pipeline.frame import FrameOptions, FrameResult, to_detection_image
 from .pipeline.image import swap_image
-from .pipeline.video import RenderResult, RenderSettings, TrackedProcessor, TrackingOptions, preview_frame, render_video
+from .pipeline.video import (Cast, RenderResult, RenderSettings, TrackedProcessor, TrackingOptions, cast_member,
+                             preview_frame, render_video)
 from .project import Project
 
 log = logging.getLogger(__name__)
@@ -44,14 +45,19 @@ class SwapJob:
     enhancer: str | None = None
     device: str = "auto"
     swapper: str = config.DEFAULT_SWAPPER
+    # Several people at once: (identity id, reference embeddings (N, 512) or photos of the person).
+    # When set, each matching person gets their own face and identity_id is only the default.
+    cast: list[tuple[str, np.ndarray | list[Path]]] | None = None
 
     def __post_init__(self):
-        if (self.reference_images or self.reference_embeddings is not None) and self.tracking.select != "reference":
+        if (self.reference_images or self.reference_embeddings is not None or self.cast) \
+                and self.tracking.select != "reference":
             self.tracking.select = "reference"
 
     def settings_record(self) -> dict:
         r = asdict(self.render)
-        r["reference_people"] = 0 if self.reference_embeddings is None else len(np.atleast_2d(self.reference_embeddings))
+        r["reference_people"] = len(self.cast) if self.cast else (
+            0 if self.reference_embeddings is None else len(np.atleast_2d(self.reference_embeddings)))
         r.pop("watermark", None)
         return {
             "frame": asdict(self.frame), "tracking": asdict(self.tracking), "render": r,
@@ -97,6 +103,23 @@ def _reference(engine: Engine, job: SwapJob) -> np.ndarray | None:
     return np.vstack(refs) if refs else None
 
 
+def _load_cast(project: Project, job: SwapJob, engine: Engine) -> tuple[list[Identity], Cast | None]:
+    """Identities used by the job (main one first) and the cast for multi-person swaps."""
+    if not job.cast:
+        return [load_identity(project, job.identity_id)[0]], None
+    identities: dict[str, Identity] = {}
+    cast: Cast = []
+    for identity_id, refs in job.cast:
+        ident, emb = load_identity(project, identity_id)
+        identities.setdefault(ident.id, ident)
+        if isinstance(refs, (list, tuple)) and refs and isinstance(refs[0], (str, Path)):
+            paths = [Path(r) for r in refs]
+            engine.safety.check_images(paths)
+            refs = embed_references(engine.analyzer, paths)[0]
+        cast.append((np.atleast_2d(np.asarray(refs, np.float32)), emb))
+    return list(identities.values()), cast
+
+
 def _models(engine: Engine) -> list[str]:
     return list(engine.model_names)
 
@@ -117,32 +140,47 @@ def select_still_faces(processor, frame: np.ndarray, job: SwapJob, reference: np
 def swap_still(project: Project, job: SwapJob, target: Path, output: Path, matte: Path | None = None) -> FrameResult:
     engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     identity, embedding = load_identity(project, job.identity_id)
+    identities, cast = _load_cast(project, job, engine)
     frame = read_image(target)
     engine.safety.check_frames([(None, to_detection_image(frame))], str(target))
     processor = engine.frame_processor(job.frame)
-    faces = select_still_faces(processor, frame, job, _reference(engine, job))
+    faces, sources = _still_targets(processor, frame, job, engine, cast)
     if not faces:
         raise ValueError(f"no target face found in {target}")
     result = swap_image(processor, embedding, frame, output,
-                        provenance={"models": _models(engine), "identity": identity.id, "source": str(target)},
-                        matte_output=matte, faces=faces, watermark=job.render.watermark)
-    _log_render(project, "image", identity, engine, job, target, output, matte, faces=len(result.faces))
+                        provenance={"models": _models(engine), "identity": identity.id,
+                                    "identities": [i.id for i in identities], "source": str(target)},
+                        matte_output=matte, faces=faces, watermark=job.render.watermark, sources=sources)
+    for ident in identities:
+        _log_render(project, "image", ident, engine, job, target, output, matte, faces=len(result.faces))
     return result
+
+
+def _still_targets(processor, frame: np.ndarray, job: SwapJob, engine: Engine, cast: Cast | None):
+    """Faces to replace in a still, and the source embedding for each (None = the job's identity)."""
+    if not cast:
+        return select_still_faces(processor, frame, job, _reference(engine, job)), None
+    faces = [f for f in processor.detect(frame) if f.det_score >= job.frame.min_det_score]
+    members = [(f, cast_member(f.embedding, cast, job.tracking.reference_threshold)) for f in faces]
+    members = [(f, m) for f, m in members if m is not None]
+    return [f for f, _ in members], [cast[m][1] for _, m in members]
 
 
 def preview(project: Project, job: SwapJob, target: Path, frame_index: int = 0) -> tuple[np.ndarray, FrameResult]:
     """Swap one frame (or a still) without writing an output. Returns (original, result)."""
     engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     _, embedding = load_identity(project, job.identity_id)
+    _, cast = _load_cast(project, job, engine)
     processor = engine.frame_processor(job.frame)
     reference = _reference(engine, job)
     if is_video(target):
         info = probe(target)
         original, result = preview_frame(processor, embedding, info, frame_index, job.tracking.select, reference,
-                                         job.tracking.reference_threshold)
+                                         job.tracking.reference_threshold, cast=cast)
     else:
         original = read_image(target)
-        result = processor.process(original, embedding, faces=select_still_faces(processor, original, job, reference))
+        faces, sources = _still_targets(processor, original, job, engine, cast)
+        result = processor.process(original, embedding, faces=faces, sources=sources)
     engine.safety.check_frames([(frame_index, to_detection_image(original))], str(target))
     if job.render.watermark is not None:
         job.render.watermark.apply(result.frame)
@@ -170,18 +208,22 @@ def swap_video(project: Project, job: SwapJob, target: Path, output: Path, progr
                cancel: threading.Event | None = None, on_frame=None) -> RenderResult:
     engine = get_engine(project, job.device, job.masks, job.enhancer, swapper=job.swapper)
     identity, embedding = load_identity(project, job.identity_id)
+    identities, cast = _load_cast(project, job, engine)
     info = probe(target)
     end = job.render.end if job.render.end is not None else info.nb_frames
     checked = engine.safety.check_video(info, start=job.render.start, count=max(1, end - job.render.start))
     log.info("NSFW gate: %d frames checked", checked)
     reference = _reference(engine, job)
-    tracked = TrackedProcessor(engine.frame_processor(job.frame), embedding, float(info.fps), job.tracking, reference)
+    tracked = TrackedProcessor(engine.frame_processor(job.frame), embedding, float(info.fps), job.tracking, reference,
+                               cast=cast)
     result = render_video(tracked, target, output, job.render,
-                          provenance={"models": _models(engine), "identity": identity.id},
+                          provenance={"models": _models(engine), "identity": identity.id,
+                                      "identities": [i.id for i in identities]},
                           progress=progress, cancel=cancel, info=info, on_frame=on_frame)
-    _log_render(project, "video", identity, engine, job, target, output, result.matte_output,
-                frames=result.frames, frames_with_faces=result.frames_with_faces, warnings=result.warnings,
-                nsfw_frames_checked=checked)
+    for ident in identities:
+        _log_render(project, "video", ident, engine, job, target, output, result.matte_output,
+                    frames=result.frames, frames_with_faces=result.frames_with_faces, warnings=result.warnings,
+                    nsfw_frames_checked=checked)
     return result
 
 

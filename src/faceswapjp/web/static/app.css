@@ -656,3 +656,14 @@ body::after {
 .ph-note b { font-weight: 650; margin-right: 4px; }
 .ph-note.g-bad b { color: #ff6b81; } .ph-note.g-ok b { color: var(--warn); } .ph-note.g-good b { color: var(--ok); }
 .ph-sum { color: var(--text-2, #c9c9d4); }
+
+/* ---- multi-person cast ------------------------------------------------------------------- */
+.cast { display: flex; flex-direction: column; gap: 8px; }
+.cast-row { display: grid; grid-template-columns: 44px 14px 44px 1fr 30px; gap: 8px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; }
+.cast-row img { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; }
+.cast-row .cast-to { box-shadow: 0 0 0 2px var(--accent); }
+.cast-arrow { color: var(--muted); text-align: center; }
+.cast-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cast-row .select-wrap select { width: 100%; }
+.cast-row .icon-btn svg { width: 14px; height: 14px; }

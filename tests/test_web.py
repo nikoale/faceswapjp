@@ -171,3 +171,19 @@ def test_shutdown_cancels_jobs_and_stops(client, monkeypatch):
     monkeypatch.setattr(server.threading, "Timer", lambda delay, fn: type("T", (), {"start": lambda self: calls.append(delay)})())
     assert client.post("/api/shutdown").json() == {"ok": True}
     assert calls == [0.6]
+
+
+def test_job_from_groups_picked_people_by_face():
+    import numpy as np
+
+    from faceswapjp.web.server import job_from
+
+    e = np.eye(512, dtype=np.float32)
+    body = {"identity": "main", "who": "pick", "picked": [e[0].tolist(), e[1].tolist(), e[2].tolist()],
+            "picked_ids": [None, "other", "main"]}
+    job = job_from(body, None)
+    cast = {iid: refs.shape[0] for iid, refs in job.cast}
+    assert cast == {"main": 2, "other": 1}
+    assert job.tracking.select == "reference"
+    body["picked_ids"] = [None, None, None]
+    assert job_from(body, None).cast is None  # everyone gets the main face: the simple path

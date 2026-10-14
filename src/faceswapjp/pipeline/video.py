@@ -27,6 +27,22 @@ log = logging.getLogger(__name__)
 
 SELECT_MODES = ("all", "largest", "reference")
 
+# A multi-person cast: for each person, (reference embeddings (N, 512), source embedding to use).
+Cast = list[tuple[np.ndarray, np.ndarray]]
+
+
+def cast_reference(cast: Cast) -> np.ndarray:
+    return np.vstack([np.atleast_2d(refs) for refs, _ in cast])
+
+
+def cast_member(embedding: np.ndarray | None, cast: Cast, threshold: float) -> int | None:
+    """Index of the cast member this face is (most similar one above threshold), else None."""
+    if embedding is None:
+        return None
+    sims = [best_similarity(embedding, refs) for refs, _ in cast]
+    best = int(np.argmax(sims))
+    return best if sims[best] >= threshold else None
+
 
 @dataclass
 class TrackingOptions:
@@ -51,8 +67,12 @@ class TrackedProcessor:
         fps: float,
         options: TrackingOptions | None = None,
         reference_embedding: np.ndarray | None = None,
+        cast: Cast | None = None,
     ):
         self.processor = processor
+        self.cast = cast
+        if cast:
+            reference_embedding = cast_reference(cast)
         self.source_embedding = source_embedding
         self.options = options or TrackingOptions()
         if self.options.select not in SELECT_MODES:
@@ -148,7 +168,11 @@ class TrackedProcessor:
             return True
         if mode == "largest":
             return track is max(pairs, key=lambda p: p[1].area)[0]
-        track.is_target = best_similarity(track.embedding, self.reference) >= self.options.reference_threshold
+        if self.cast:
+            track.cast_index = cast_member(track.embedding, self.cast, self.options.reference_threshold)
+            track.is_target = track.cast_index is not None
+        else:
+            track.is_target = best_similarity(track.embedding, self.reference) >= self.options.reference_threshold
         return track.is_target
 
     def process(self, frame: np.ndarray, index: int) -> FrameResult:
@@ -171,8 +195,9 @@ class TrackedProcessor:
                 if self.options.select == "all" or track.is_target:
                     chosen.append((track, track.face))
         with prof("swap_total"):
+            sources = [self.cast[t.cast_index][1] for t, _ in chosen] if self.cast else None
             return self.processor.process(frame, self.source_embedding, faces=[f for _, f in chosen],
-                                          keys=[t.id for t, _ in chosen])
+                                          keys=[t.id for t, _ in chosen], sources=sources)
 
 
 @dataclass
@@ -386,6 +411,7 @@ def preview_frame(
     select: str = "all",
     reference: np.ndarray | None = None,
     reference_threshold: float = 0.4,
+    cast: Cast | None = None,
 ) -> tuple[np.ndarray, FrameResult]:
     """Process a single frame (no temporal smoothing). Returns (original, result)."""
     if not 0 <= index < max(1, info.nb_frames):
@@ -394,6 +420,11 @@ def preview_frame(
     faces = [f for f in processor.detect(frame) if f.det_score >= processor.options.min_det_score]
     if select == "largest":
         faces = sorted(faces, key=lambda f: f.area, reverse=True)[:1]
+    elif cast:
+        members = [(f, cast_member(f.embedding, cast, reference_threshold)) for f in faces]
+        members = [(f, m) for f, m in members if m is not None]
+        return frame, processor.process(frame, source_embedding, faces=[f for f, _ in members],
+                                        sources=[cast[m][1] for _, m in members])
     elif select == "reference":
         if reference is None:
             raise ValueError("select='reference' needs a reference embedding")

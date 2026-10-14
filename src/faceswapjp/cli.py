@@ -113,6 +113,7 @@ def project_init(
 IdentityOpt = Annotated[str, typer.Option("--identity", help="Identity id (see `identity list`).")]
 SelectOpt = Annotated[str, typer.Option("--select", help="all | largest | reference (set automatically by --only-person)")]
 OnlyPersonOpt = Annotated[Optional[list[Path]], typer.Option("--only-person", help="Image(s) of the person to replace; others are left alone.")]
+AlsoOpt = Annotated[Optional[list[str]], typer.Option("--also", help="Another person and the face to give them: FACE_ID:photo.jpg[,photo2.jpg] (repeatable; needs --only-person for the main face).")]
 RefThresholdOpt = Annotated[float, typer.Option(help="Similarity needed to count as the --only-person.")]
 MaskOpt = Annotated[str, typer.Option("--mask", help="Comma list: box, occlusion (hands/props), region (exclude hair/ears), mouth (keep teeth/tongue from the footage).")]
 EnhanceOpt = Annotated[Optional[str], typer.Option("--enhance", help="Face restoration: gfpgan")]
@@ -140,7 +141,7 @@ EndOpt = Annotated[Optional[int], typer.Option(help="End frame (exclusive).")]
 def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur, color_strength,
          smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
          fmt="h264", encoder=None, matte=None, start=0, end=None, quality="standard", detect_every=3,
-         detail=256, texture=0.6, model=None, shading=0.5, temporal=0.5):
+         detail=256, texture=0.6, model=None, shading=0.5, temporal=0.5, also=None):
     from .jobs import SwapJob
     from .pipeline.frame import FrameOptions
     from .pipeline.video import RenderSettings, TrackingOptions
@@ -166,7 +167,23 @@ def _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_bl
         enhancer=enhance,
         device=device,
         swapper=model or config.DEFAULT_SWAPPER,
+        cast=_cast(identity, only_person, also),
     )
+
+
+def _cast(identity, only_person, also):
+    if not also:
+        return None
+    if not only_person:
+        _fail("--also needs --only-person (photos of the person who gets the main --identity face)")
+    cast = [(identity, list(only_person))]
+    for item in also:
+        face_id, _, photos = item.partition(":")
+        paths = [Path(x) for x in photos.split(",") if x]
+        if not face_id or not paths or not all(p.is_file() for p in paths):
+            _fail(f"--also expects FACE_ID:photo.jpg[,photo2.jpg], got {item!r}")
+        cast.append((face_id, paths))
+    return cast
 
 
 def _run(fn):
@@ -245,6 +262,7 @@ def swap_image_cmd(
     matte: Annotated[Optional[Path], typer.Option(help="Also write a 16-bit matte PNG.")] = None,
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
+    also: AlsoOpt = None,
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
@@ -272,7 +290,7 @@ def swap_image_cmd(
     if not target.is_file():
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
     result = _run(lambda: swap_still(proj, job, target, out, matte))
     typer.echo(f"replaced {len(result.faces)} face(s) -> {out}")
 
@@ -291,6 +309,7 @@ def swap_video_cmd(
     end: EndOpt = None,
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
+    also: AlsoOpt = None,
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
@@ -319,7 +338,7 @@ def swap_video_cmd(
         _fail(f"target not found: {target}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal)
+               fmt, encoder, matte, start, end, quality, detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
     res = _run(lambda: swap_video(proj, job, target, out, progress=_progress_bar()))
     for w in res.warnings:
         typer.secho(f"warning: {w}", fg=typer.colors.YELLOW, err=True)
@@ -339,6 +358,7 @@ def preview(
     compare: Annotated[bool, typer.Option(help="Write original | result side by side.")] = True,
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
+    also: AlsoOpt = None,
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
@@ -366,7 +386,7 @@ def preview(
 
     proj = Project.load(project)
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
-               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal)
+               color_strength, 0.0, watermark, watermark_text, watermark_position, watermark_font, device, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
     original, result = _run(lambda: run_preview(proj, job, target, frame))
     img = np.hstack([original, result.frame]) if compare else result.frame
     out = out.with_suffix(".png")
@@ -387,6 +407,7 @@ def batch(
     matte: MatteOpt = None,
     select: SelectOpt = "all",
     only_person: OnlyPersonOpt = None,
+    also: AlsoOpt = None,
     ref_threshold: RefThresholdOpt = 0.4,
     mask: MaskOpt = "box",
     enhance: EnhanceOpt = None,
@@ -417,7 +438,7 @@ def batch(
         _fail(f"not a folder: {input_dir}")
     job = _job(identity, select, only_person, ref_threshold, mask, enhance, enhance_blend, mask_blur,
                color_strength, smoothing, watermark, watermark_text, watermark_position, watermark_font, device,
-               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal)
+               fmt, encoder, matte, quality=quality, detect_every=detect_every, detail=detail, texture=texture, model=model, shading=shading, temporal=temporal, also=also)
 
     def progress(i, n, done, total):
         if done == total or done % 10 == 0:

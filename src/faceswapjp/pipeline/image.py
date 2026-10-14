@@ -22,9 +22,10 @@ def swap_image(
     matte_output: Path | None = None,
     faces: list[Face] | None = None,
     watermark: Watermark | None = None,
+    sources: list[np.ndarray] | None = None,
 ) -> FrameResult:
     frame = read_image(target) if not isinstance(target, np.ndarray) else target
-    result = processor.process(frame, source_embedding, faces=faces)
+    result = processor.process(frame, source_embedding, faces=faces, sources=sources)
     if not result.faces:
         raise ValueError(f"no target face found in {target if not isinstance(target, np.ndarray) else 'image'}")
     out = watermark.apply(result.frame.copy()) if watermark is not None else result.frame

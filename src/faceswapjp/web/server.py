@@ -258,6 +258,14 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
     refs = np.asarray(picked, dtype=np.float32) if who == "pick" else None
     if refs is not None and (refs.ndim != 2 or refs.shape[1] != 512):
         raise ApiError("選んだ人の情報が正しくありません。もう一度選び直してください")
+    cast = None
+    picked_ids = list(p.get("picked_ids") or [])
+    if refs is not None and any(picked_ids):
+        # people mapped to other registered faces: group the picked embeddings by face to use
+        groups: dict[str, list[np.ndarray]] = {}
+        for emb, iid in zip(refs, picked_ids + [None] * (len(refs) - len(picked_ids))):
+            groups.setdefault(iid or p["identity"], []).append(emb)
+        cast = [(iid, np.stack(embs)) for iid, embs in groups.items()]
     start = int(p.get("in_frame") or 0)
     out_frame = p.get("out_frame")
     end = int(out_frame) + 1 if out_frame not in (None, "") and t and int(out_frame) < t.frames - 1 else None
@@ -281,6 +289,7 @@ def job_from(p: dict[str, Any], t: Target | None) -> SwapJob:
         enhancer="gfpgan" if p.get("sharpen") else None,
         device=p.get("device") or "auto",
         swapper=swapper_name(p.get("model")),
+        cast=cast,
     )
 
 
