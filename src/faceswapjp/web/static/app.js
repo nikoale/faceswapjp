@@ -844,7 +844,8 @@ function openRegister() {
     <div class="modal-body">
       <div class="field"><span>顔の写真（1〜5 枚）</span>
         <div class="photo-drop" id="photos"><div class="empty">ここに写真をドロップ、またはクリックして選択<br><small>本人だけが写った、明るく正面に近い写真がおすすめ。角度の違う写真を数枚入れると安定します。</small></div></div>
-        <input type="file" id="photo-input" accept="image/*" multiple class="hidden"></div>
+        <input type="file" id="photo-input" accept="image/*" multiple class="hidden">
+        <div id="ph-summary" class="ph-summary"></div></div>
       <div class="grid2">
         <label class="field"><span>呼び名</span><input class="input" id="r-label" placeholder="例：スタント A"></label>
         <label class="field"><span>本人の氏名</span><input class="input" id="r-person" placeholder="例：山田 太郎（AI の顔なら作成者名）"></label>
@@ -862,11 +863,38 @@ function openRegister() {
     <div class="modal-foot"><button class="btn ghost" data-close>キャンセル</button><button class="btn primary" id="r-save">${I.check} 登録する</button></div>`,
   (m) => {
     const drop = $("#photos", m), input = $("#photo-input", m);
+    const empty = drop.innerHTML;
+    let grades = null, seq = 0;
+    const badge = { good: "◎", ok: "△", bad: "✕" };
     const show = () => {
-      drop.innerHTML = files.length ? files.map((f) => `<img class="ph" src="${URL.createObjectURL(f)}" alt="">`).join("") + `<span class="hint">クリックで追加</span>`
-        : drop.innerHTML;
+      if (!files.length) { drop.innerHTML = empty; $("#ph-summary", m).innerHTML = ""; return; }
+      drop.innerHTML = files.map((f, i) => {
+        const g = grades?.photos[i];
+        return `<div class="ph-wrap ${g ? "g-" + g.grade : ""}" title="${g ? esc(g.notes.join("\n") || "良い写真です") : "判定中…"}">
+          <img class="ph" src="${URL.createObjectURL(f)}" alt="">
+          <span class="ph-badge">${g ? badge[g.grade] : '<div class="spinner"></div>'}</span>
+          <button class="ph-del" data-del="${i}" title="外す">${I.x}</button></div>`;
+      }).join("") + `<span class="hint">クリックで追加</span>`;
+      const sum = $("#ph-summary", m);
+      sum.innerHTML = grades ? `${grades.photos.map((g, i) => g.notes.length
+        ? `<div class="ph-note g-${g.grade}"><b>${i + 1} 枚目 ${badge[g.grade]}</b> ${esc(g.notes.join("・"))}</div>` : "").join("")}
+        <div class="ph-sum">${esc(grades.summary)}</div>` : `<div class="ph-sum muted">写真を確認しています…</div>`;
+      $$("[data-del]", drop).forEach((b) => b.onclick = (e) => {
+        e.stopPropagation(); files.splice(+b.dataset.del, 1); check();
+      });
     };
-    const add = (list) => { files = [...files, ...[...list].filter((f) => f.type.startsWith("image/"))].slice(0, 5); show(); };
+    const check = async () => {
+      grades = null; show();
+      if (!files.length) return;
+      const my = ++seq;
+      const fd = new FormData();
+      files.forEach((f) => fd.append("images", f));
+      fd.append("project", S.project || "");
+      const r = await attempt(() => api("/api/photos/check", { body: fd }));
+      if (my !== seq || !r) return;
+      grades = r; show();
+    };
+    const add = (list) => { files = [...files, ...[...list].filter((f) => f.type.startsWith("image/"))].slice(0, 5); check(); };
     drop.onclick = () => input.click();
     input.onchange = () => add(input.files);
     drop.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add("over"); };
@@ -876,6 +904,7 @@ function openRegister() {
     $$("[data-type]", m).forEach((b) => b.onclick = () => { type = b.dataset.type; $$("[data-type]", m).forEach((x) => x.classList.toggle("on", x === b)); });
     $("#r-save", m).onclick = async () => {
       if (!files.length) return toast("顔の写真を 1 枚以上追加してください", "err");
+      if (grades && grades.photos.every((g) => g.grade === "bad")) return toast("使える写真がありません。別の写真を選んでください", "err");
       const fd = new FormData();
       files.forEach((f) => fd.append("images", f));
       fd.append("label", $("#r-label", m).value);

@@ -637,3 +637,22 @@ body::after {
 .k-small { --k: #4fc3f7; } .k-ambiguous { --k: #ff8fd0; }
 .track > .issue-mark { position: absolute; bottom: 0; height: 6px; border-radius: 3px; background: var(--k);
   box-shadow: 0 0 8px var(--k); opacity: .9; pointer-events: none; z-index: 1; }
+
+/* ---- photo grading (face registration) ----------------------------------------------------- */
+.ph-wrap { position: relative; display: inline-block; border-radius: 12px; box-shadow: 0 0 0 2px transparent; transition: box-shadow .2s; }
+.ph-wrap .ph { display: block; }
+.ph-wrap.g-good { box-shadow: 0 0 0 2px var(--ok); }
+.ph-wrap.g-ok { box-shadow: 0 0 0 2px var(--warn); }
+.ph-wrap.g-bad { box-shadow: 0 0 0 2px #ff6b81; }
+.ph-badge { position: absolute; left: 4px; bottom: 4px; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 10px;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; background: rgba(10,10,14,.8); color: #fff; }
+.ph-badge .spinner { width: 12px; height: 12px; border-width: 2px; }
+.g-good .ph-badge { color: var(--ok); } .g-ok .ph-badge { color: var(--warn); } .g-bad .ph-badge { color: #ff6b81; }
+.ph-del { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 3px;
+  background: rgba(10,10,14,.75); color: #fff; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.ph-wrap:hover .ph-del { opacity: 1; }
+.ph-del svg { width: 14px; height: 14px; }
+.ph-summary { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12.5px; }
+.ph-note b { font-weight: 650; margin-right: 4px; }
+.ph-note.g-bad b { color: #ff6b81; } .ph-note.g-ok b { color: var(--warn); } .ph-note.g-good b { color: var(--ok); }
+.ph-sum { color: var(--text-2, #c9c9d4); }

@@ -11,6 +11,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -420,6 +421,30 @@ def create_app(root: Path, device: str = "auto", token: str | None = None):
             shutil.rmtree(tmp, ignore_errors=True)
         low = [i + 1 for i, c in enumerate(ident.consistency) if c < 0.45]
         return {"id": ident.id, "warning": f"{', '.join(map(str, low))} 枚目は他の写真と別人のように見えます" if low else None}
+
+    @app.post("/api/photos/check")
+    async def check_photos(images: list[UploadFile] = File(...), project: str = Form("")):
+        """Grade face photos before registering them (nothing is stored)."""
+        from ..jobs import get_engine
+        from ..photo_quality import assess_set
+        from ..pipeline.frame import to_detection_image
+
+        engine = get_engine(ctx.project(project) if project else None, ctx.device, with_swapper=False)
+        tmp = Path(tempfile.mkdtemp(prefix="fsj-check-"))
+        try:
+            pics, dets = [], []
+            for i, f in enumerate(images[:10]):
+                dst = tmp / f"{i:02d}{Path(f.filename or 'x.jpg').suffix.lower()}"
+                dst.write_bytes(await f.read())
+                try:
+                    img = to_detection_image(read_image(dst))
+                except Exception:  # noqa: BLE001 - unreadable file: report it as such
+                    img = np.zeros((8, 8, 3), np.uint8)
+                pics.append(img)
+                dets.append([f for f in engine.analyzer.detect(img) if f.det_score >= 0.5])
+            return assess_set(pics, dets)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     @app.get("/api/projects/{name}/log")
     def consent_log(name: str):
